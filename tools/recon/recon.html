@@ -39,8 +39,13 @@
 <aside>
   <h1>实时 3D 重建</h1>
   <div>
-    <img id="live" alt="">
-    <div class="cap"><span>校正后的左眼</span><span>视差（越暖越近）</span></div>
+    <div class="row" id="views">
+      <button data-view="depth" class="on">深度</button>
+      <button data-view="rectified">校正检查</button>
+      <button data-view="raw">原始画面</button>
+    </div>
+    <img id="live" alt="" style="margin-top:6px">
+    <div class="cap" id="cap"></div>
   </div>
   <div class="state" id="state">连接中…</div>
   <div class="row">
@@ -63,7 +68,9 @@
     <dt>已融合 / 跳过</dt><dd id="frames">—</dd>
     <dt>双目</dt><dd id="stereo">—</dd>
     <dt>标定</dt><dd id="calib">—</dd>
+    <dt>标定质量</dt><dd id="quality">—</dd>
   </dl>
+  <p class="hint" id="oldCalib" hidden style="color:var(--warn)">这份标定是旧版本做的（没记录棋盘格覆盖范围），建议点「重新标定」，结果会准很多。</p>
   <p class="hint">慢慢转头、走动，近处（0.3–2.5 米）效果最好。拖动旋转视角，滚轮缩放，右键平移。</p>
 </aside>
 
@@ -180,8 +187,13 @@ async function poll() {
     if (c.square_m) {
       const how = { screen: '按屏幕', manual: '尺子量', auto: '定位推算' }[c.square_method] ?? '';
       const vio = c.square_method !== 'auto' && c.square_vio_m > 0 ? ` · 定位估算 ${(c.square_vio_m * 1000).toFixed(1)} mm` : '';
-      $('calib').textContent = `格子 ${(c.square_m * 1000).toFixed(2)} mm（${how}）${vio}`;
+      $('calib').textContent = `格子 ${(c.square_m * 1000).toFixed(2)} mm${how ? `（${how}）` : ''}${vio}`;
     }
+    if (c.rms_stereo_px != null) {
+      const cover = c.theta_max_deg ? ` · 覆盖 ${c.theta_max_deg.join(' / ')}°` : '';
+      $('quality').textContent = `重投影 ${c.rms_stereo_px.toFixed(2)} px · 手眼 ${(c.hand_eye_spread_m * 1000).toFixed(1)} mm${cover} · 匹配区 ${s.rect_size.join('×')}`;
+    }
+    $('oldCalib').hidden = !s.old_calib;
     $('pause').classList.toggle('on', s.paused);
     $('pause').textContent = s.paused ? '继续融合' : '暂停融合';
     setPose(s.pose);
@@ -202,7 +214,20 @@ async function loadCloud(v) {
   cloudBusy = false;
 }
 const live = $('live');
-live.onload = live.onerror = () => setTimeout(() => (live.src = `/frame.jpg?${Date.now()}`), 80);
+let view = 'depth';
+const CAPTIONS = {
+  depth: ['校正后的左眼', '视差（越暖越近）'],
+  rectified: ['左眼', '右眼：同一物体应落在同一条横线上，上下错开说明标定不准'],
+  raw: ['左眼原始画面', '右眼原始画面 · 绿框 = 用来匹配的区域'],
+};
+function setView(v) {
+  view = v;
+  for (const b of $('views').children) b.classList.toggle('on', b.dataset.view === v);
+  $('cap').innerHTML = CAPTIONS[v].map((t) => `<span>${t}</span>`).join('');
+}
+$('views').onclick = (e) => e.target.dataset.view && setView(e.target.dataset.view);
+setView('depth');
+live.onload = live.onerror = () => setTimeout(() => (live.src = `/frame.jpg?view=${view}&t=${Date.now()}`), 80);
 live.src = '/frame.jpg';
 
 // ---- controls ----

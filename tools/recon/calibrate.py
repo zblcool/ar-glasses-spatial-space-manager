@@ -100,6 +100,32 @@ def hand_eye(T_world_dev: list[np.ndarray], T_cam_board: list[np.ndarray], solve
     return make_T(R, t), s
 
 
+def fisheye_calibrate(objs, pts, size, flags, crit):
+    """cv2.fisheye.calibrate, dropping views it chokes on: its initialisation
+    asserts on some (near-degenerate) views instead of skipping them.
+    Returns (rms, K, D, indices of the views kept)."""
+    keep = list(range(len(pts)))
+    while True:
+        try:
+            rms, K, D, _, _ = cv2.fisheye.calibrate([objs[i] for i in keep], [pts[i] for i in keep], size, None, None, flags=flags, criteria=crit)
+            return rms, K, D, keep
+        except cv2.error:
+            if len(keep) <= 8:
+                raise ValueError("棋盘格的角度变化太少，算不出镜头参数")
+            # Drop the first view whose removal lets it run; else the first view.
+            for i in keep:
+                rest = [j for j in keep if j != i]
+                try:
+                    cv2.fisheye.calibrate([objs[j] for j in rest], [pts[j] for j in rest], size, None, None, flags=flags,
+                                          criteria=(cv2.TERM_CRITERIA_COUNT, 5, 0))
+                    keep = rest
+                    break
+                except cv2.error:
+                    continue
+            else:
+                keep = keep[1:]
+
+
 def solve(views: list[dict], size: tuple[int, int], square: float | None = None) -> tuple[Calibration, dict]:
     """views: dicts with 'left' / 'right' corners and 'pose' (T_world_dev).
     square: the board square in metres, or None to solve for it."""
@@ -110,11 +136,20 @@ def solve(views: list[dict], size: tuple[int, int], square: float | None = None)
     R = [v["right"] for v in views]
     flags = fisheye_flag("CALIB_RECOMPUTE_EXTRINSIC") | fisheye_flag("CALIB_FIX_SKEW")
     crit = (cv2.TERM_CRITERIA_COUNT + cv2.TERM_CRITERIA_EPS, 100, 1e-7)
-    rms_l, K1, D1, _, _ = cv2.fisheye.calibrate(objs, L, size, None, None, flags=flags, criteria=crit)
-    rms_r, K2, D2, _, _ = cv2.fisheye.calibrate(objs, R, size, None, None, flags=flags, criteria=crit)
+    rms_l, K1, D1, kl = fisheye_calibrate(objs, L, size, flags, crit)
+    rms_r, K2, D2, kr = fisheye_calibrate(objs, R, size, flags, crit)
+    if len(kl) < len(views) or len(kr) < len(views):
+        good = sorted(set(kl) & set(kr))
+        views, objs = [views[i] for i in good], [objs[i] for i in good]
+        L, R = [L[i] for i in good], [R[i] for i in good]
     out = cv2.fisheye.stereoCalibrate(objs, L, R, K1, D1, K2, D2, size, flags=fisheye_flag("CALIB_FIX_INTRINSIC"), criteria=crit)
     rms_s, Rs, Ts = out[0], out[5], out[6]
 
+    def widest(corners, K, D):  # widest off-axis angle the board reached, radians
+        n = cv2.fisheye.undistortPoints(np.concatenate(corners), K, D).reshape(-1, 2)
+        return float(np.arctan(np.hypot(n[:, 0], n[:, 1])).max())
+
+    theta_max = (widest(L, K1, D1), widest(R, K2, D2))
     poses = [v["pose"] for v in views]
     boards = [board_pose(obj, c, K1, D1) for c in L]
     X, s = hand_eye(poses, boards, solve_scale=square is None)
@@ -138,8 +173,9 @@ def solve(views: list[dict], size: tuple[int, int], square: float | None = None)
         "square_m": float(unit * s),
         "square_vio_m": float(square_vio),
         "hand_eye_spread_m": spread,
+        "theta_max_deg": [round(float(np.degrees(t)), 1) for t in theta_max],
     }
-    return Calibration(size, K1, D1, K2, D2, Rs, Ts.reshape(3, 1), X), stats
+    return Calibration(size, K1, D1, K2, D2, Rs, Ts.reshape(3, 1), X, theta_max), stats
 
 
 class Calibrator:
