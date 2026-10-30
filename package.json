@@ -9,6 +9,8 @@
     "start": "npm --prefix app start",
     "helper": "make -C helper",
     "cameras": "node tools/camera-viewer/server.mjs",
+    "calibrate": "python3 tools/recon/calibrate.py",
+    "recon": "python3 tools/recon/recon.py",
     "package": "npm --prefix app run package"
   }
 }

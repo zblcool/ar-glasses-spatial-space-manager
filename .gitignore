@@ -5,3 +5,6 @@ helper/build/
 .DS_Store
 app/release/
 app/assets/public/mediapipe/
+tools/recon/calib.json
+tools/recon/scans/
+__pycache__/

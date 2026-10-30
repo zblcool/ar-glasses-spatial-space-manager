@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calibration Board</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; color: #111; font: 14px -apple-system, "PingFang SC", system-ui, sans-serif; }
+  body { display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  svg { max-width: 96vw; max-height: 92vh; }
+  p { position: fixed; bottom: 8px; left: 0; right: 0; text-align: center; color: #888; margin: 0; }
+  :fullscreen p { display: none; }
+</style>
+</head>
+<body>
+<!-- 10 × 7 squares = 9 × 6 inner corners, with a one-square white margin all round. -->
+<svg id="board" viewBox="-1 -1 12 9" xmlns="http://www.w3.org/2000/svg"></svg>
+<p>9×6 内角点棋盘格 · 点击进入全屏 · 用尺子量一个黑格子的边长（毫米），标定时要用</p>
+<script>
+  const svg = document.getElementById('board');
+  let html = '<rect x="-1" y="-1" width="12" height="9" fill="#fff"/>';
+  for (let y = 0; y < 7; y++) for (let x = 0; x < 10; x++) if ((x + y) % 2 === 0) html += `<rect x="${x}" y="${y}" width="1" height="1" fill="#000"/>`;
+  svg.innerHTML = html;
+  document.body.onclick = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen());
+</script>
+</body>
+</html>

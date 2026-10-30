@@ -14,9 +14,15 @@
  *   u32 magic 'VCAM' (0x4D414356)   u8 kind   u8[3] reserved
  *   u16 width   u16 height          u32 length   f64 timestamp (epoch ms)
  *
- *   kind 1  stereo pair: left plane then right plane, width*height bytes each
+ *   kind 1  stereo pair: left plane then right plane, width*height bytes each,
+ *           then a 40-byte pose trailer: f64 SDK frame timestamp, f32[7] head
+ *           pose [px py pz qw qx qy qz] (OpenGL frame, metres) read when the
+ *           frame arrived, i32 pose status (0 stable, 1 unstable, -1 none)
  *   kind 2  RGB frame: one JPEG
  *   kind 3  status: a JSON object (width/height 0)
+ *
+ * --log-level 3 makes the SDK log everything to stderr (it may print the
+ * factory camera calibration).
  *
  * stdin commands (one per line):
  *   exposure auto              automatic exposure for the tracking cameras
@@ -54,6 +60,7 @@
 #include "viture_result.h"
 
 #define MAGIC 0x4D414356u /* "VCAM" */
+#define POSE_TRAILER 40
 enum { KIND_STEREO = 1, KIND_RGB = 2, KIND_STATUS = 3 };
 
 static volatile sig_atomic_t g_stop = 0;
@@ -66,6 +73,14 @@ static float g_cmd_exp_ms = 4.0f;
 static int g_cmd_exp_gain = 4;
 static atomic_int g_cmd_rgb = -1;
 static atomic_int g_pair = 0;
+
+/* Latest 6DoF pose, polled on its own thread (never from an SDK callback,
+ * which could deadlock against the VIO thread that is calling us). */
+static XRDeviceProviderHandle g_handle = NULL;
+static atomic_int g_pose_run = 0;
+static pthread_mutex_t g_pose_mtx = PTHREAD_MUTEX_INITIALIZER;
+static float g_pose[7];
+static int g_pose_status = -1;
 
 /* ---- utilities ----------------------------------------------------------- */
 
@@ -256,15 +271,42 @@ static void sdk_log_hook(int level, const char *tag, const char *message)
     fprintf(stderr, "[sdk:%d:%s] %s\n", level, tag ? tag : "", message ? message : "");
 }
 
+static void *pose_fn(void *arg)
+{
+    (void)arg;
+    while (atomic_load(&g_pose_run) && !g_stop) {
+        float pose[7];
+        int status = 1;
+        if (xr_device_provider_get_gl_pose_carina(g_handle, pose, 0.0, &status) == VITURE_GLASSES_SUCCESS) {
+            pthread_mutex_lock(&g_pose_mtx);
+            memcpy(g_pose, pose, sizeof pose);
+            g_pose_status = status;
+            pthread_mutex_unlock(&g_pose_mtx);
+        }
+        sleep_ms(2);
+    }
+    return NULL;
+}
+
 /* Each callback carries two stereo pairs; `pair` picks which one is sent. */
 static void on_stereo(char *left0, char *right0, char *left1, char *right1, double timestamp, int width, int height)
 {
-    (void)timestamp;
     int second = atomic_load(&g_pair) == 1 && left1 && right1;
     char *l = second ? left1 : left0, *r = second ? right1 : right0;
     if (!l || !r || width <= 0 || height <= 0 || width > 65535 || height > 65535) return;
     size_t plane = (size_t)width * (size_t)height;
-    slot_put(&g_stereo, width, height, l, plane, r, plane);
+    uint8_t *pair = malloc(2 * plane + POSE_TRAILER);
+    if (!pair) return;
+    memcpy(pair, l, plane);
+    memcpy(pair + plane, r, plane);
+    uint8_t *tr = pair + 2 * plane;
+    memcpy(tr, &timestamp, 8);
+    pthread_mutex_lock(&g_pose_mtx);
+    memcpy(tr + 8, g_pose, 28);
+    memcpy(tr + 36, &g_pose_status, 4);
+    pthread_mutex_unlock(&g_pose_mtx);
+    slot_put(&g_stereo, width, height, pair, 2 * plane + POSE_TRAILER, NULL, 0);
+    free(pair);
 }
 
 static void on_rgb(const XRCameraFrame *frame, void *user_data)
@@ -387,6 +429,10 @@ static int run_session(int pid, int want_rgb)
         xr_device_provider_destroy(h);
         return -1;
     }
+    g_handle = h;
+    atomic_store(&g_pose_run, 1);
+    pthread_t pose_thread;
+    int have_pose = pthread_create(&pose_thread, NULL, pose_fn, NULL) == 0;
     emit_status("{\"status\":\"streaming\",\"device\":\"%s\",\"pid\":%d}", name, pid);
     logf_err("streaming %s (pid 0x%04X)", name, pid);
 
@@ -416,6 +462,11 @@ static int run_session(int pid, int want_rgb)
     }
 
     rgb_stop(cam);
+    atomic_store(&g_pose_run, 0);
+    if (have_pose) pthread_join(pose_thread, NULL);
+    pthread_mutex_lock(&g_pose_mtx);
+    g_pose_status = -1;
+    pthread_mutex_unlock(&g_pose_mtx);
     xr_device_provider_stop(h);
     xr_device_provider_shutdown(h);
     xr_device_provider_destroy(h);
@@ -424,11 +475,12 @@ static int run_session(int pid, int want_rgb)
 
 int main(int argc, char **argv)
 {
-    int want_rgb = 1;
+    int want_rgb = 1, log_level = LOG_LEVEL_ERROR;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--no-rgb")) want_rgb = 0;
+        else if (!strcmp(argv[i], "--log-level") && i + 1 < argc) log_level = atoi(argv[++i]);
         else {
-            fprintf(stderr, "usage: %s [--no-rgb]\n", argv[0]);
+            fprintf(stderr, "usage: %s [--no-rgb] [--log-level 0-3]\n", argv[0]);
             return 2;
         }
     }
@@ -456,7 +508,7 @@ int main(int argc, char **argv)
     pthread_t writer;
     pthread_create(&writer, NULL, writer_fn, NULL);
 
-    xr_device_provider_set_log_level(LOG_LEVEL_ERROR);
+    xr_device_provider_set_log_level(log_level);
     xr_device_provider_set_log_hook(sdk_log_hook);
 
     int announced = 0;
