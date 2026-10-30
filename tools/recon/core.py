@@ -103,7 +103,8 @@ def parse_stereo(w: int, h: int, t: float, payload: bytes) -> StereoFrame:
 
 class FrameStream:
     """Reads the camera viewer's /stream on a thread and keeps the newest stereo
-    frame (older ones are dropped: processing is slower than the cameras)."""
+    frame (older ones are dropped: processing is slower than the cameras), and
+    the newest RGB frame (a JPEG) while the RGB camera is on."""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 8787):
         self.host, self.port = host, port
@@ -111,6 +112,8 @@ class FrameStream:
         self._latest: StereoFrame | None = None
         self._seq = 0
         self._cond = threading.Condition()
+        self.rgb: tuple[int, float, bytes] | None = None  # (sequence, epoch ms, JPEG)
+        self.rgb_cond = threading.Condition()
         self.error: str | None = None
         threading.Thread(target=self._run, daemon=True).start()
 
@@ -135,11 +138,33 @@ class FrameStream:
                             self._latest = frame
                             self._seq += 1
                             self._cond.notify_all()
+                    elif kind == KIND_RGB:
+                        self.put_rgb(t, payload)
                     elif kind == KIND_STATUS:
                         self.status.update(json.loads(payload))
             except (OSError, ConnectionError, http.client.HTTPException) as err:
                 self.error = f"camera viewer at {self.host}:{self.port} not reachable ({err}); is `npm run cameras` running?"
                 time.sleep(1.0)
+
+    def put_rgb(self, t: float, jpeg: bytes) -> None:
+        """A new RGB frame, from the stream or from a browser that opened the camera itself."""
+        with self.rgb_cond:
+            self.rgb = ((self.rgb[0] if self.rgb else 0) + 1, t, jpeg)
+            self.rgb_cond.notify_all()
+
+    def next_rgb(self, after: int, timeout: float = 1.0) -> tuple[int, float, bytes] | None:
+        with self.rgb_cond:
+            self.rgb_cond.wait_for(lambda: self.rgb is not None and self.rgb[0] != after, timeout)
+            return self.rgb if self.rgb and self.rgb[0] != after else None
+
+    def command(self, line: str) -> None:
+        """Send a command to the camera helper through the viewer (e.g. "rgb 1")."""
+        try:
+            conn = http.client.HTTPConnection(self.host, self.port, timeout=3)
+            conn.request("POST", "/cmd", line)
+            conn.getresponse().read()
+        except (OSError, http.client.HTTPException):
+            pass
 
     def next(self, after: int, timeout: float = 1.0) -> tuple[int, StereoFrame | None]:
         """Wait for a frame newer than sequence number `after`."""
@@ -311,6 +336,14 @@ class StereoDepth:
         pts = np.stack([(xs - cx) * z / f, (ys - cy) * z / f, z], axis=1)
         return pts, g[ys // step, xs // step]
 
+    def depth_image(self, disp: np.ndarray, near: float, far: float) -> np.ndarray:
+        """Per-pixel depth (rect frame z, metres); 0 where there is none."""
+        z = np.zeros(disp.shape, np.float32)
+        ok = disp > 0.5
+        z[ok] = self.focal * self.baseline / disp[ok]
+        z[(z < near) | (z > far)] = 0
+        return z
+
 
 # ---- voxel map --------------------------------------------------------------------
 
@@ -383,3 +416,219 @@ class VoxelMap:
             f.write(rec.tobytes())
         return len(pos)
 
+
+
+# ---- surface (TSDF) -----------------------------------------------------------------
+
+BLOCK = 8  # voxels per block edge
+_LOCAL = np.stack(np.meshgrid(*[np.arange(BLOCK)] * 3, indexing="ij"), -1).reshape(-1, 3)
+_CORNERS = np.array([[i & 1, (i >> 1) & 1, (i >> 2) & 1] for i in range(8)])
+_EDGES = [(a, b) for a in range(8) for b in range(8) if a < b and bin(a ^ b).count("1") == 1]
+
+
+def _pack(q: np.ndarray) -> np.ndarray:
+    q = q.astype(np.int64) + (1 << 20)
+    return (q[..., 0] << 42) | (q[..., 1] << 21) | q[..., 2]
+
+
+class TSDFMap:
+    """Truncated signed distance to the nearest surface, in sparse 8×8×8 voxel
+    blocks (only blocks near something seen exist). Each depth frame updates the
+    blocks around its points: a voxel in front of the measured depth moves
+    towards +1 (free), one just behind it towards the negative distance. The
+    surface is where the averaged field crosses zero; mesh() extracts it.
+
+    Averaging distances (rather than points, as VoxelMap does) cancels stereo
+    noise along the line of sight and gives a closed surface with normals.
+    `box` (lo, hi in world metres) restricts the map to one object."""
+
+    def __init__(self, voxel: float = 0.02, box: tuple[np.ndarray, np.ndarray] | None = None):
+        self.lock = threading.Lock()
+        self.reset(voxel, box)
+
+    def reset(self, voxel: float | None = None, box=None) -> None:
+        with self.lock:
+            if voxel:
+                self.voxel = voxel
+                self.trunc = max(4 * voxel, 0.02)
+            self.box = box
+            self.index: dict[int, int] = {}
+            self.n = 0
+            self.coords = np.zeros((256, 3), np.int64)
+            self.tsdf = np.ones((256, BLOCK ** 3), np.float32)
+            self.weight = np.zeros((256, BLOCK ** 3), np.float32)
+            self.gray = np.zeros((256, BLOCK ** 3), np.float32)
+            self.version = 0
+            self._mesh: tuple | None = None
+
+    def _grow(self, cap: int) -> None:
+        def more(arr, fill):
+            out = np.full((cap, *arr.shape[1:]), fill, arr.dtype)
+            out[: self.n] = arr[: self.n]
+            return out
+        self.coords, self.tsdf = more(self.coords, 0), more(self.tsdf, 1.0)
+        self.weight, self.gray = more(self.weight, 0.0), more(self.gray, 0.0)
+
+    def _blocks(self, keys: np.ndarray, coords: np.ndarray) -> np.ndarray:
+        idx = np.fromiter((self.index.get(k, -1) for k in keys.tolist()), np.int64, len(keys))
+        new = idx < 0
+        if new.any():
+            k = int(new.sum())
+            if self.n + k > len(self.coords):
+                self._grow(max(2 * len(self.coords), self.n + k))
+            ids = np.arange(self.n, self.n + k)
+            self.index.update(zip(keys[new].tolist(), ids.tolist()))
+            self.coords[ids] = coords[new]
+            idx[new] = ids
+            self.n += k
+        return idx
+
+    def integrate(self, depth: np.ndarray, gray: np.ndarray, f: float, cx: float, cy: float, T_world_cam: np.ndarray, max_weight: float = 50) -> None:
+        h, w = depth.shape
+        R, t = T_world_cam[:3, :3], T_world_cam[:3, 3]
+        bs = self.voxel * BLOCK
+
+        # Blocks to touch: those around this frame's points, from just in front to just behind.
+        ys, xs = np.nonzero(depth[::4, ::4])
+        if len(ys) == 0:
+            return
+        z = depth[ys * 4, xs * 4]
+        ray = np.stack([(xs * 4 - cx) / f, (ys * 4 - cy) / f, np.ones_like(z)], 1)
+        pts = np.concatenate([ray * (z + s)[:, None] for s in (-self.trunc, 0, self.trunc)]) @ R.T + t
+        if self.box is not None:
+            lo, hi = self.box
+            pts = pts[np.all((pts >= lo) & (pts <= hi), 1)]
+        q = np.unique(np.floor(pts / bs).astype(np.int64), axis=0)
+        if len(q) == 0:
+            return
+
+        with self.lock:
+            idx = self._blocks(_pack(q), q)
+            centres = ((q[:, None, :] * BLOCK + _LOCAL[None]) + 0.5) * self.voxel  # (n, 512, 3) world
+            c = (centres - t) @ R  # camera frame
+            zc = c[..., 2]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                u = np.rint(c[..., 0] / zc * f + cx)
+                v = np.rint(c[..., 1] / zc * f + cy)
+            ok = (zc > 0.05) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+            ui, vi = u[ok].astype(np.int64), v[ok].astype(np.int64)
+            d = np.zeros_like(zc)
+            d[ok] = depth[vi, ui]
+            sdf = d - zc
+            upd = ok & (d > 0) & (sdf > -self.trunc)
+            if self.box is not None:
+                lo, hi = self.box
+                upd &= np.all((centres >= lo) & (centres <= hi), -1)
+            bi, vi_ = np.nonzero(upd)
+            blk = idx[bi]
+            val = np.minimum(1.0, sdf[bi, vi_] / self.trunc)
+            wt = self.weight[blk, vi_]
+            self.tsdf[blk, vi_] = (self.tsdf[blk, vi_] * wt + val) / (wt + 1)
+            self.weight[blk, vi_] = np.minimum(wt + 1, max_weight)
+            # Gray only from near the surface (free space has no colour of its own).
+            near = np.abs(val) < 1
+            g = np.zeros_like(zc)
+            g[ok] = gray[v[ok].astype(np.int64), u[ok].astype(np.int64)]
+            gb, gv = blk[near], vi_[near]
+            self.gray[gb, gv] = (self.gray[gb, gv] * wt[near] + g[bi, vi_][near]) / (wt[near] + 1)
+            self.version += 1
+
+    def mesh(self, min_weight: float = 3) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Surface where the field crosses zero, as (vertices f32 (n,3), gray u8 (n),
+        triangles u32 (m,3)). Surface nets: one vertex per voxel cell the surface
+        passes through, at the mean of its edge crossings; one quad per crossed edge.
+        Triangles wind counter-clockwise seen from the free (positive) side."""
+        with self.lock:
+            key = (self.version, min_weight)
+            if self._mesh and self._mesh[0] == key:
+                return self._mesh[1]
+            n = self.n
+            coords, tsdf, weight, gray = self.coords[:n].copy(), self.tsdf[:n].copy(), self.weight[:n].copy(), self.gray[:n].copy()
+            voxel = self.voxel
+        empty = (np.zeros((0, 3), np.float32), np.zeros(0, np.uint8), np.zeros((0, 3), np.uint32))
+        g = (coords[:, None, :] * BLOCK + _LOCAL[None]).reshape(-1, 3)
+        m = weight.ravel() >= min_weight
+        g, val, gr = g[m], tsdf.ravel()[m], gray.ravel()[m]
+        if len(g) == 0:
+            out = empty
+        else:
+            keys = _pack(g)
+            order = np.argsort(keys)
+            keys, g, val, gr = keys[order], g[order], val[order], gr[order]
+
+            def look(q):
+                k = _pack(q)
+                i = np.clip(np.searchsorted(keys, k), 0, len(keys) - 1)
+                return np.where(keys[i] == k, i, -1)
+
+            # Cells (by their lowest corner) that touch an inside voxel.
+            neg = g[val < 0]
+            cells = np.unique((neg[:, None, :] - _CORNERS[None]).reshape(-1, 3), axis=0)
+            ci = look(cells[:, None, :] + _CORNERS[None])  # (c, 8)
+            full = np.all(ci >= 0, 1)
+            cells, ci = cells[full], ci[full]
+            cv = val[ci]
+            inside = cv < 0
+            active = inside.any(1) & ~inside.all(1)
+            cells, ci, cv = cells[active], ci[active], cv[active]
+            if len(cells) == 0:
+                out = empty
+            else:
+                acc = np.zeros((len(cells), 3))
+                cnt = np.zeros(len(cells))
+                for a, b in _EDGES:
+                    va, vb = cv[:, a], cv[:, b]
+                    x = (va < 0) != (vb < 0)
+                    tt = va[x] / (va[x] - vb[x])
+                    acc[x] += _CORNERS[a] + tt[:, None] * (_CORNERS[b] - _CORNERS[a])
+                    cnt[x] += 1
+                verts = ((cells + acc / cnt[:, None] + 0.5) * voxel).astype(np.float32)
+                vgray = np.clip(gr[ci].mean(1), 0, 255).astype(np.uint8)
+                ckeys = _pack(cells)  # sorted: cells came from np.unique, packing keeps the order
+
+                def cell(q):
+                    k = _pack(q)
+                    i = np.clip(np.searchsorted(ckeys, k), 0, len(ckeys) - 1)
+                    return np.where(ckeys[i] == k, i, -1)
+
+                tris = []
+                eye = np.eye(3, dtype=np.int64)
+                for a in range(3):
+                    eu, ev = eye[(a + 1) % 3], eye[(a + 2) % 3]
+                    for s in (1, -1):
+                        j = look(neg + s * eye[a])
+                        hit = j >= 0
+                        hit[hit] = val[j[hit]] >= 0
+                        lo = neg[hit] if s == 1 else neg[hit] - eye[a]
+                        quad = np.stack([cell(lo), cell(lo - eu), cell(lo - eu - ev), cell(lo - ev)], 1)
+                        quad = quad[np.all(quad >= 0, 1)]
+                        if s == -1:  # inside is the upper end: the surface faces -a
+                            quad = quad[:, ::-1]
+                        tris += [quad[:, [0, 1, 2]], quad[:, [0, 2, 3]]]
+                out = (verts, vgray, np.concatenate(tris).astype(np.uint32))
+        with self.lock:
+            if self.version == key[0]:
+                self._mesh = (key, out)
+        return out
+
+    def save_ply(self, path: Path, min_weight: float) -> int:
+        verts, gray, tris = self.mesh(min_weight)
+        with open(path, "wb") as f:
+            f.write(
+                (
+                    "ply\nformat binary_little_endian 1.0\n"
+                    f"element vertex {len(verts)}\n"
+                    "property float x\nproperty float y\nproperty float z\n"
+                    "property uchar red\nproperty uchar green\nproperty uchar blue\n"
+                    f"element face {len(tris)}\nproperty list uchar uint vertex_indices\nend_header\n"
+                ).encode()
+            )
+            rec = np.zeros(len(verts), dtype=[("p", "<f4", 3), ("c", "u1", 3)])
+            rec["p"] = verts
+            rec["c"] = gray[:, None]
+            f.write(rec.tobytes())
+            face = np.zeros(len(tris), dtype=[("n", "u1"), ("i", "<u4", 3)])
+            face["n"] = 3
+            face["i"] = tris
+            f.write(face.tobytes())
+        return len(tris)

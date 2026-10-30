@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // One command for the 3D scanner:  npm run scan   (or double-click Scan.command)
 //
-//   1. builds the native helpers if needed (make -C helper);
+//   1. builds the native helpers if needed (make -C helper), and the Object
+//      Capture tool (tools/capture, Swift) that turns recordings into models;
 //   2. makes a Python environment in tools/recon/.venv with numpy + OpenCV,
 //      the first time and whenever requirements.txt changes;
 //   3. starts the camera stream (tools/camera-viewer, port 8787) and the
@@ -12,7 +13,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +42,16 @@ if (process.platform !== 'darwin') fail('the glasses SDK is macOS (Apple Silicon
 step('native helpers');
 if (!run('make', ['-C', 'helper', '--no-print-directory']))
   fail('building the helper failed. Is Xcode Command Line Tools installed?  xcode-select --install');
+
+step('Object Capture tool');
+const ocSrc = join(root, 'tools/capture/object_capture.swift'), ocBin = join(root, 'tools/capture/build/object-capture');
+if (!existsSync(ocBin) || statSync(ocBin).mtimeMs < statSync(ocSrc).mtimeMs) {
+  mkdirSync(dirname(ocBin), { recursive: true });
+  // Not fatal: live scanning works without it, and the page tries again when you build a model.
+  if (!run('swiftc', ['-O', '-parse-as-library', '-swift-version', '5', ocSrc, '-o', ocBin]))
+    console.warn('could not build it (Xcode Command Line Tools?); photo models will not work, live scanning will');
+}
+console.log('ok');
 
 step('Python environment');
 const req = readFileSync(join(recon, 'requirements.txt'));

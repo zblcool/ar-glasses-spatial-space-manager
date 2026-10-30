@@ -20,7 +20,8 @@ Click any screen to put the real mouse on that display and use its apps directly
 │                                   switch + restore, cursor warp, keep-glasses-clear)
 │       └── camera_helper.m         viture-camera-helper (all three cameras → binary stream)
 ├── tools/camera-viewer/    web page showing what the glasses' cameras see (not part of the app)
-├── tools/recon/            live 3D reconstruction from the tracking cameras (Python, not part of the app)
+├── tools/recon/            live 3D reconstruction from the tracking cameras, RGB recorder (Python, not part of the app)
+├── tools/capture/          object-capture: photos → textured model with Apple's Object Capture (Swift)
 ├── app/                    Electron + Vite + TypeScript
 │   ├── electron/           main process (helper supervisor, IPC) + preload
 │   ├── renderer/           three.js scene
@@ -215,8 +216,9 @@ Either way, the image is downscaled to 8192 px wide, and its centre faces forwar
 
 | Input | Action |
 |---|---|
-| **C** / **Space** | control center (anchor mode, recenter, 3D, 6DoF, scenery, grid, cinema, hands, debug) |
+| **C** / **Space** | control center (anchor mode, recenter, 3D, 6DoF, scenery, grid, cinema, see-through, hands, debug) |
 | **T** | Cinema on/off (selected screen, or the one you look at) |
+| **V** | See-through: camera → outlines only → off |
 | click a screen | put the real mouse on that display, at that point |
 | **3** | 3D (SBS) on/off: glasses 3D mode when tracking, otherwise a side-by-side preview |
 | **⌃⌥⎋** | bring the mouse back (global) |
@@ -247,6 +249,18 @@ Either way, the image is downscaled to 8192 px wide, and its centre faces forwar
 - **Cinema** (**T** or the control-center tile) flies the selected screen, or the one you look at, to 30 m in front of you. It sizes it to fill about 85 % of the view's width (or 75 % of its height) and stands it just above the floor, so you look up at it a little. The scenery dims to about 40 %. **T** again flies it back to where it was.
 - **What sells the distance:** in 3D (SBS) mode, the stereo disparity at 30 m is almost zero, and your eyes read that directly. In 2D, the cues are the grid floor and each screen's footprint on it, birds and motes passing in front of it, and parallax in 6DoF.
 - **Sky** (control-center tile) turns the panorama off (black background), which leaves just the grid and the screens: the clearest way to judge the depth effect. It's saved as `skybox: 'panorama' | 'off'` in `prefs.json`, ready to become a skybox switcher.
+
+### See-through
+
+**V** or the **See-through** tile shows the room through the glasses' front RGB camera instead of the panorama, scenery and grid; the screens float over it. Press again for **outlines only**, and once more to turn it off. The camera is a plain UVC device, so the renderer opens it with `getUserMedia` (the same way Hands does, and Hands can use it at the same time). No camera helper is needed, and the pose helper keeps running.
+
+- The image hangs 100 m away, sized from the camera's horizontal FOV (`GLASSES_CAMERA_HFOV`, 75°), so it lines up roughly 1:1 with the real world.
+- Each frame is placed at the head orientation from when it was **captured** (the frame's `captureTime`, else 90 ms ago), taken from a 1 s pose history. When you turn, the room stays still instead of swimming along with your head; only its edges lag.
+- The camera is captured at its full 1920×1080. In camera style, a light unsharp mask on brightness makes it a bit crisper.
+- **Outlines only** runs one GPU pass on the camera image (17 texture reads per pixel). It takes a Sobel gradient of brightness at two scales, each divided by the local mean so dark corners count as much as bright ones. The fine scale places a thin line, and the coarse scale has to agree, which drops fine texture (carpet, grain, noise) and keeps the outlines of things. The lines are the grid's cyan on black, and black is transparent on the glasses. `EDGE_LO` / `EDGE_HI` in `scene/Passthrough.ts` set how much detail survives.
+- The Luma lenses are optical see-through, so the camera image is added on top of the real view. Set the lens tint to its darkest for a clean picture.
+- Without the glasses' camera it falls back to the Mac's (useful only for testing), and says so.
+- The camera's mounting angle is `PITCH_OFFSET_DEG` in `scene/Passthrough.ts`. Tune it if the image sits above or below the real world.
 
 ### Grid floor
 
@@ -308,7 +322,7 @@ When you hover over either eye, the page draws a matching horizontal line across
 
 1. Each stereo pair is rectified and matched (OpenCV semi-global matching) into a depth map.
 2. The depth map is moved into the world with the pose the SDK reported for that frame.
-3. The points are averaged into a 2 cm voxel map, which a three.js page draws as a point cloud next to the glasses' path.
+3. The depth is fused twice. The points are averaged into a 2 cm voxel map, which the three.js page draws as a point cloud. Distances to the surface are averaged into a truncated signed distance field (TSDF), whose zero crossing becomes a shaded mesh (表面). Both are drawn next to the glasses' path.
 
 **One click:** quit Viture Open Walker, then double-click `Scan.command` in Finder, or run `npm run scan`. The launcher (`tools/scan.mjs`):
 
@@ -343,7 +357,27 @@ The result goes to `tools/recon/calib.json`. If the error is too large, the page
 - pause fusion, or clear the map;
 - save the map as a PLY file to `tools/recon/scans/`, which opens in MeshLab or Blender;
 - choose how many frames must see a voxel before it shows;
-- colour the points by gray value or by height.
+- switch between the surface (default) and the point cloud;
+- scan one object: 框住眼前的物体 puts a box (20–150 cm) around what the middle of the view sees. Only that box is mapped from then on, with 5 mm voxels instead of 2 cm, and the view orbits it. Walk slowly around the object and look at it from above too;
+- colour the points or surface by gray value or by height.
+
+Saving writes `scan-….ply` (points) and `scan-…-mesh.ply` (the surface, with faces).
+
+**The surface.** `TSDFMap` in `core.py` is plain NumPy, with no Open3D: Open3D's macOS wheels need Homebrew libraries or a long list of Python packages. It keeps 8×8×8-voxel blocks only near surfaces that have been seen, in a hash map. Each frame updates the blocks around its depth points. A voxel in front of the measured depth moves towards +1 (free space), one up to the truncation distance behind it towards the negative distance, and each voxel's value is a running average. Averaging distances, unlike points, cancels stereo noise along the line of sight. The mesh comes from surface nets: one vertex per voxel cell the surface crosses, at the mean of its edge crossings, and one quad per crossed edge. It is extracted when the page asks, about once a second. Costs on an M2: about 20 ms per frame for the room at 2 cm, 10–30 ms for an object box at 5 mm. `--surface-voxel 0.01` gives a finer room, but at about 70 ms per frame. `--object-voxel` sets the box's voxel size.
+
+**Photo models (拍照建模).** The live map comes from the low-resolution gray tracking cameras. For a model that looks like the real thing, the page can also record the 1920×1080 RGB camera and hand the photos to Apple's Object Capture (RealityKit's `PhotogrammetrySession`), which runs on the Mac:
+
+1. Put the object on a surface with some pattern (a plain white table gives the photos nothing to align on), click **开始录制**, and walk slowly around it: once at eye level, once a bit higher, then look down at it from above. Keep the whole object in view. The page shows the camera and counts the photos; 40–150 is a good number.
+2. A photo is taken each time the head has moved 4 cm or turned 6° since the last one (every 0.6 s if there is no 6DoF pose). Of the frames in the next 0.35 s, the sharpest is kept; if they are all blurred compared with the recent ones, it waits for the next. The camera's own JPEGs are saved without re-encoding, to `tools/recon/captures/capture-…/images/`, with the head pose of each in `frames.json`. Recording turns the RGB camera on (`rgb 1` to the camera helper) and off again. The first time, macOS asks for camera access for your terminal. If the SDK can't open the camera, the page offers to open it as a webcam in the browser and sends its frames instead.
+3. Pick the recording and a detail level, then **生成模型**. `tools/capture/build/object-capture` (built by `npm run scan`, or on first use) writes `model/model.usdz` and `model/obj/` (OBJ, MTL and color, normal and AO textures). **在这里查看** shows the model in the page, **用「预览」打开** opens the USDZ in Preview, and **打开文件夹** opens the capture in Finder.
+
+On an M2 with 8 GB, 66 synthetic 1440×1080 photos took 29 s at "reduced" and 32 took about 3 min at "medium". The live map slows to a crawl meanwhile, because Object Capture takes the whole machine. If the photos don't fit together (too few, too little overlap, no texture), it fails with `processError`, and the page explains what to try. The tool also works on its own, on any folder of photos:
+
+```
+tools/capture/build/object-capture <images-dir> <out-dir> [--detail preview|reduced|medium|full|raw] [--unordered] [--high-sensitivity] [--no-masking]
+```
+
+It prints its progress as one JSON object per line. Object Capture finds the pose of each photo itself, so the head poses in `frames.json` aren't used yet; they are there for later (COLMAP / Gaussian splatting).
 
 The image at the top has three views:
 

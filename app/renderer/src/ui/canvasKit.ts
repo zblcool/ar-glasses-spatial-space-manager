@@ -56,6 +56,7 @@ export type IconName =
   | 'grid'
   | 'sky'
   | 'cinema'
+  | 'eye'
   | 'close';
 
 /** Simple line icons drawn in a size×size box at (x, y). */
@@ -146,6 +147,12 @@ export function drawIcon(g: CanvasRenderingContext2D, name: IconName, x: number,
     case 'cinema':
       // A big screen far above a row of seats.
       path('M3 3h18v10H3z M5 20c0-2 2-3 3.5-3S12 18 12 20 M12 20c0-2 2-3 3.5-3S19 18 19 20');
+      break;
+    case 'eye':
+      path('M2 12c3-5 6.5-7 10-7s7 2 10 7c-3 5-6.5 7-10 7s-7-2-10-7z');
+      g.beginPath();
+      g.arc(12, 12, 3, 0, Math.PI * 2);
+      g.stroke();
       break;
     case 'close':
       path('M6 6l12 12 M18 6L6 18');

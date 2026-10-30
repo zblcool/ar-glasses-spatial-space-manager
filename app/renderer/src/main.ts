@@ -7,6 +7,7 @@ import { MockHead } from './pose/MockHead';
 import { Ambient } from './scene/Ambient';
 import { FLOOR_Y, Grid } from './scene/Grid';
 import { Panorama, PANORAMA_RADIUS } from './scene/Panorama';
+import { Passthrough, type PassthroughState } from './scene/Passthrough';
 import { ScreenManager } from './screens/ScreenManager';
 import { anglesFromDirection, LIMITS, type ScreenLayout, type VirtualScreen } from './screens/VirtualScreen';
 import { ControlCenter, type ControlAction } from './ui/ControlCenter';
@@ -17,7 +18,7 @@ import { Overlay } from './ui/Overlay';
 import { Setup } from './ui/Setup';
 import { vow } from './vow';
 
-const DEFAULT_PREFS: Prefs = { anchor: 'spatial', ambient: true, stereoPreview: false, smoothing: 0.2, ipd: 0.063, autoEnter: false, hands: false, handsCamera: 'mac', skybox: 'panorama', grid: true };
+const DEFAULT_PREFS: Prefs = { anchor: 'spatial', ambient: true, stereoPreview: false, smoothing: 0.2, ipd: 0.063, autoEnter: false, hands: false, handsCamera: 'mac', skybox: 'panorama', grid: true, seeThrough: false, seeThroughStyle: 'camera' };
 /** Stereo convergence distance (m): roughly where the glasses' optics put the virtual image. */
 const CONVERGENCE = 4;
 /** Smooth Follow: start following past this yaw offset (deg), stop within this one. */
@@ -43,6 +44,7 @@ async function boot() {
   // Read by pushControlState(), which status events can call early in boot.
   let handState: HandState = 'off';
   let handCamera: HandCamera = 'mac';
+  let seeState: PassthroughState = 'off';
   let cinema: { screen: VirtualScreen; saved: ScreenLayout } | null = null;
   let tween: { screen: VirtualScreen; from: ScreenLayout; to: ScreenLayout; t: number } | null = null;
   let dim = 1;
@@ -68,6 +70,25 @@ async function boot() {
   const grid = new Grid();
   grid.enabled = prefs.grid;
   scene.add(grid.mesh, grid.footprints);
+  const passthrough = new Passthrough((st, detail) => {
+    seeState = st;
+    if (st === 'error') {
+      overlay.toast(`See-through: ${detail ?? 'failed to start'}`);
+      prefs.seeThrough = false;
+      savePrefs();
+    } else if (st === 'on' && passthrough.camera === 'mac') overlay.toast('See-through: glasses camera not found — showing the Mac camera');
+    applyBackground();
+    pushControlState();
+  });
+  passthrough.setStyle(prefs.seeThroughStyle);
+  scene.add(passthrough.mesh);
+  /** See-through replaces the sky, scenery and grid while its image is up (their own settings stay). */
+  function applyBackground() {
+    const see = prefs.seeThrough && seeState === 'on';
+    panorama.mesh.visible = !see && prefs.skybox !== 'off';
+    ambient.enabled = !see && prefs.ambient;
+    grid.enabled = !see && prefs.grid;
+  }
 
   const screens = new ScreenManager();
   await screens.init();
@@ -147,14 +168,16 @@ async function boot() {
       stereo,
       stereoOnGlasses: stereoOnGlasses(),
       dof,
-      ambient: ambient.enabled,
+      ambient: prefs.ambient,
       debug: overlay.debugVisible,
       hands: prefs.hands,
       handsLine: !prefs.hands ? 'Off' : handState === 'tracking' ? (handCamera === 'glasses' ? 'Glasses cam' : 'Mac cam') : HANDS_LINE[handState],
       handsCamera: prefs.handsCamera,
       skybox: prefs.skybox,
-      grid: grid.enabled,
+      grid: prefs.grid,
       cinema: !!cinema,
+      seeThrough: prefs.seeThrough,
+      seeThroughLine: !prefs.seeThrough ? 'Off' : seeState === 'on' ? `${prefs.seeThroughStyle === 'outline' ? 'Outline' : 'Camera'}${passthrough.camera === 'mac' ? ' (Mac)' : ''}` : 'Starting…',
       deviceLine: overlay.deviceLine(),
     });
   }
@@ -202,8 +225,8 @@ async function boot() {
         overlay.toast(dof === 6 ? 'Restarting tracking in 6DoF…' : 'Restarting tracking in 3DoF…');
         break;
       case 'ambient':
-        ambient.enabled = !ambient.enabled;
-        prefs.ambient = ambient.enabled;
+        prefs.ambient = !prefs.ambient;
+        applyBackground();
         savePrefs();
         break;
       case 'debug':
@@ -222,16 +245,19 @@ async function boot() {
         break;
       case 'skybox':
         prefs.skybox = prefs.skybox === 'off' ? 'panorama' : 'off';
-        panorama.mesh.visible = prefs.skybox !== 'off';
+        applyBackground();
         savePrefs();
         break;
       case 'grid':
-        grid.enabled = !grid.enabled;
-        prefs.grid = grid.enabled;
+        prefs.grid = !prefs.grid;
+        applyBackground();
         savePrefs();
         break;
       case 'cinema':
         toggleCinema();
+        break;
+      case 'seeThrough':
+        cycleSeeThrough();
         break;
       case 'close':
         controlCenter.hide();
@@ -299,6 +325,7 @@ async function boot() {
     if (Math.abs(dim - target) > 0.001) {
       dim += (target - dim) * (1 - Math.exp(-dt * 2.5));
       panorama.mesh.material.color.setScalar(dim);
+      passthrough.setBrightness(dim);
     }
     if (!tween) return;
     tween.t = Math.min(1, tween.t + dt / CINEMA_TWEEN_S);
@@ -357,6 +384,31 @@ async function boot() {
     });
   }
   if (prefs.hands) startHands();
+
+  // ---- see-through: the glasses' camera as the background ----
+  function setSeeThrough(on: boolean) {
+    prefs.seeThrough = on;
+    savePrefs();
+    if (on) {
+      overlay.toast('See-through on — set the lenses to their darkest tint for a clean view (V again: outlines only)');
+      void passthrough.start();
+    } else passthrough.stop();
+    pushControlState();
+  }
+  /** Off → camera → outline → off. */
+  function cycleSeeThrough() {
+    if (!prefs.seeThrough) {
+      prefs.seeThroughStyle = 'camera';
+      passthrough.setStyle('camera');
+      setSeeThrough(true);
+    } else if (prefs.seeThroughStyle === 'camera') {
+      prefs.seeThroughStyle = 'outline';
+      passthrough.setStyle('outline');
+      savePrefs();
+      overlay.toast('See-through: outlines only (V again to turn off)');
+    } else setSeeThrough(false);
+  }
+  if (prefs.seeThrough) void passthrough.start();
 
   // ---- panorama ----
   panorama
@@ -434,6 +486,7 @@ async function boot() {
     tracker.update(camera, dt);
     updateWorkspace(dt);
     panorama.mesh.position.copy(camera.position); // background stays at infinity in 6DoF
+    passthrough.update(camera, now);
     ambient.update(now / 1000, dt);
     grid.update(now / 1000, screens.screens);
     updateCinema(dt);
@@ -463,7 +516,7 @@ async function boot() {
 
   (window as unknown as { __vowReady?: boolean }).__vowReady = true;
   // Dev-only handle for scripted UI tests (project screens to pixels, etc.).
-  if (import.meta.env.DEV) Object.assign(window, { __vow: { screens, camera, controlCenter, interaction, hands } });
+  if (import.meta.env.DEV) Object.assign(window, { __vow: { screens, camera, controlCenter, interaction, hands, passthrough } });
 }
 
 function setAnisotropy(tex: Texture, n: number) {

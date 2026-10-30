@@ -115,6 +115,10 @@ export interface Prefs {
   skybox: 'panorama' | 'off';
   /** Glowing wireframe floor to the horizon (depth cue). */
   grid: boolean;
+  /** See-through: the glasses' camera image replaces the sky, scenery and grid. */
+  seeThrough: boolean;
+  /** How see-through looks: the camera picture, or only the outlines of things. */
+  seeThroughStyle: 'camera' | 'outline';
 }
 
 /** API exposed on window.vow by the preload script. */
