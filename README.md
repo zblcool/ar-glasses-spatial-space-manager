@@ -18,6 +18,8 @@ Click any screen to put the real mouse on that display and use its apps directly
 │       ├── main.c, usb_enum.*      viture-pose-helper (Viture SDK → JSON poses)
 │       └── display_helper.m        viture-display-helper (virtual displays, main-display
 │                                   switch + restore, cursor warp, keep-glasses-clear)
+│       └── camera_helper.m         viture-camera-helper (all three cameras → binary stream)
+├── tools/camera-viewer/    web page showing what the glasses' cameras see (not part of the app)
 ├── app/                    Electron + Vite + TypeScript
 │   ├── electron/           main process (helper supervisor, IPC) + preload
 │   ├── renderer/           three.js scene
@@ -270,6 +272,32 @@ Limits:
 - The pointer is a 2D mapping of where your hand is in the image, not a true 3D pointing direction. Push / pull depth is estimated from hand size, so it is relative and noisy, not metric.
 - No scrolling (use the wheel), no ⌥-modifier, and no gestures beyond pinch. Pinch thresholds are fixed (`PINCH_ON` / `PINCH_OFF` in `renderer/src/interaction/HandTracker.ts`).
 - While the hand is in view it costs a few ms of GPU per camera frame (30 fps). When Hands is off, the camera is fully released.
+
+## Camera viewer (what the glasses see)
+
+A standalone web page, separate from the app, that shows all three cameras of a Luma Ultra live:
+
+- the **left and right tracking cameras**: grayscale, used by the glasses for 6DoF (VIO). They come from the Carina camera callback in the SDK.
+- the **RGB camera**: 1920×1080 MJPEG, the one Hands can use. It comes from `xr_camera_provider` in the SDK.
+
+```bash
+make -C helper           # also builds helper/build/viture-camera-helper
+npm run cameras          # → http://localhost:8787
+```
+
+Quit Viture Open Walker first, because both open the glasses through the SDK. The first time the RGB camera starts, macOS asks for camera access for your terminal. `npm run cameras -- --fake` shows synthetic frames, so you can try the page without glasses. `-- --no-rgb` streams only the tracking cameras, and `-- --port N` changes the port.
+
+On the page you can:
+
+- view the stereo pair as **原图** (raw), **红蓝 3D** (a red/cyan anaglyph) or **左右差异** (|L − R|, bright where the two eyes disagree, which means near objects).
+- use **自动增强**, which stretches the gray levels so a dim room is visible.
+- choose the **第 1 / 2 对** stereo pair. The SDK hands over two pairs per callback.
+- set the tracking cameras to auto or manual **exposure** (0.01–8 ms, gain 0–15).
+- pause, take a PNG snapshot of each camera, and enlarge a single camera.
+
+When you hover over either eye, the page draws a matching horizontal line across both images, so you can compare disparity. If the RGB camera won't open through the SDK, the page offers to open it as a normal webcam in the browser instead.
+
+`tools/camera-viewer/server.mjs` is a dependency-free Node server. It relays the helper's packets to the page over one streaming HTTP response. The packet format is described at the top of `helper/src/camera_helper.m`.
 
 ## Architecture notes
 
