@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Reconstruction</title>
+<style>
+  :root { --bg: #0d0f12; --panel: rgba(22,26,31,.92); --line: #262c34; --text: #e6e9ee; --muted: #8b95a3; --accent: #5fb4ff; --ok: #4fd18b; --warn: #f2b84b; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, "PingFang SC", system-ui, sans-serif; overflow: hidden; }
+  #view { position: fixed; inset: 0; }
+  aside { position: fixed; top: 12px; right: 12px; width: min(420px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow: auto;
+          background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  img { width: 100%; border-radius: 6px; background: #000; display: block; min-height: 60px; }
+  .cap { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .row > span { color: var(--muted); font-size: 12px; }
+  button { background: #161a1f; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  button:hover { border-color: var(--accent); }
+  button.on { background: #1f3a55; color: #cfe8ff; }
+  input[type=range] { width: 120px; accent-color: var(--accent); }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+  dt { color: var(--muted); } dd { margin: 0; }
+  .state { font-size: 13px; } .state.ok { color: var(--ok); } .state.warn { color: var(--warn); }
+  .hint { color: var(--muted); font-size: 12px; margin: 0; }
+  #toggle { display: none; }
+  @media (max-width: 640px) { aside { top: auto; bottom: 12px; max-height: 50vh; } }
+</style>
+<script type="importmap">
+  { "imports": {
+    "three": "/vendor/three/build/three.module.js",
+    "three/addons/": "/vendor/three/examples/jsm/"
+  } }
+</script>
+</head>
+<body>
+<div id="view"></div>
+<aside>
+  <h1>实时 3D 重建</h1>
+  <div>
+    <img id="live" alt="">
+    <div class="cap"><span>校正后的左眼</span><span>视差（越暖越近）</span></div>
+  </div>
+  <div class="state" id="state">连接中…</div>
+  <div class="row">
+    <button id="pause">暂停融合</button>
+    <button id="reset">清空</button>
+    <button id="save">保存 PLY</button>
+    <button id="follow" class="on">跟随眼镜</button>
+  </div>
+  <div class="row"><span>着色</span>
+    <button data-colour="gray" class="on">灰度</button>
+    <button data-colour="height">高度</button>
+  </div>
+  <div class="row"><span>去噪（至少被看到几次）</span><input type="range" id="minHits" min="1" max="10" value="3"><span id="minHitsVal">3</span></div>
+  <div class="row"><span>点大小</span><input type="range" id="pointSize" min="4" max="40" value="16"><span id="pointSizeVal">1.6 cm</span></div>
+  <dl>
+    <dt>处理速度</dt><dd id="fps">—</dd>
+    <dt>本帧深度点</dt><dd id="points">—</dd>
+    <dt>地图体素</dt><dd id="voxels">—</dd>
+    <dt>已融合 / 跳过</dt><dd id="frames">—</dd>
+    <dt>双目</dt><dd id="stereo">—</dd>
+  </dl>
+  <p class="hint">慢慢转头、走动，近处（0.3–2.5 米）效果最好。拖动旋转视角，滚轮缩放，右键平移。</p>
+</aside>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const $ = (id) => document.getElementById(id);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+$('view').appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d0f12);
+const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 100);
+camera.position.set(1.2, 1.0, 1.8);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+scene.add(new THREE.AxesHelper(0.2));
+const grid = new THREE.GridHelper(10, 20, 0x2a3440, 0x1a2028);
+grid.position.y = -1.6;
+scene.add(grid);
+
+// ---- point cloud ----
+const geom = new THREE.BufferGeometry();
+const material = new THREE.PointsMaterial({ size: 0.016, vertexColors: true, sizeAttenuation: true });
+const cloud = new THREE.Points(geom, material);
+scene.add(cloud);
+let colourMode = 'gray', lastCloud = null;
+
+function parseCloud(buf) {
+  const n = new DataView(buf).getUint32(0, true);
+  return { n, pos: new Float32Array(buf, 4, n * 3), gray: new Uint8Array(buf, 4 + n * 12, n) };
+}
+
+function applyCloud(c) {
+  lastCloud = c;
+  const { n, pos, gray } = c;
+  const col = new Float32Array(n * 3);
+  if (colourMode === 'gray') {
+    for (let i = 0; i < n; i++) { const g = gray[i] / 255; col[3 * i] = col[3 * i + 1] = col[3 * i + 2] = g; }
+  } else {
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < n; i++) { const y = pos[3 * i + 1]; if (y < lo) lo = y; if (y > hi) hi = y; }
+    const c = new THREE.Color();
+    for (let i = 0; i < n; i++) {
+      const t = (pos[3 * i + 1] - lo) / Math.max(hi - lo, 1e-3);
+      c.setHSL(0.7 - 0.7 * t, 0.75, 0.35 + 0.35 * (gray[i] / 255));
+      col[3 * i] = c.r; col[3 * i + 1] = c.g; col[3 * i + 2] = c.b;
+    }
+  }
+  geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geom.computeBoundingSphere();
+}
+
+// ---- glasses: the rectified left camera's frustum (OpenCV axes: z forward, y down) ----
+const glasses = new THREE.Group();
+glasses.matrixAutoUpdate = false;
+{
+  const z = 0.15, x = 0.12, y = 0.09;
+  const c = [[-x, -y, z], [x, -y, z], [x, y, z], [-x, y, z]];
+  const v = [];
+  for (const p of c) v.push(0, 0, 0, ...p);
+  for (let i = 0; i < 4; i++) v.push(...c[i], ...c[(i + 1) % 4]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+  glasses.add(new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0x5fb4ff })));
+  const up = new THREE.BufferGeometry();
+  up.setAttribute('position', new THREE.Float32BufferAttribute([-x * 0.4, -y, z, 0, -y * 1.5, z, x * 0.4, -y, z], 3));
+  glasses.add(new THREE.Line(up, new THREE.LineBasicMaterial({ color: 0x5fb4ff })));
+}
+scene.add(glasses);
+const trailMax = 2000, trailPos = new Float32Array(trailMax * 3);
+let trailN = 0;
+const trailGeom = new THREE.BufferGeometry();
+trailGeom.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+scene.add(new THREE.Line(trailGeom, new THREE.LineBasicMaterial({ color: 0xf2b84b, transparent: true, opacity: 0.6 })));
+const glassesPos = new THREE.Vector3(), prevGlassesPos = new THREE.Vector3(Infinity, 0, 0);
+let follow = true;
+
+function setPose(m) {
+  if (!m) return;
+  glasses.matrix.fromArray(m);
+  glassesPos.setFromMatrixPosition(glasses.matrix);
+  if (glassesPos.distanceTo(prevGlassesPos) > 0.01) {
+    if (trailN === trailMax) { trailPos.copyWithin(0, 3); trailN--; }
+    trailPos.set([glassesPos.x, glassesPos.y, glassesPos.z], trailN * 3);
+    trailN++;
+    trailGeom.setDrawRange(0, trailN);
+    trailGeom.attributes.position.needsUpdate = true;
+    if (follow) {
+      const d = glassesPos.clone().sub(controls.target);
+      controls.target.add(d); camera.position.add(d);
+    }
+    prevGlassesPos.copy(glassesPos);
+  }
+}
+
+// ---- polling ----
+let version = -1, cloudBusy = false, lastCloudAt = 0;
+async function poll() {
+  try {
+    const s = await (await fetch('/state')).json();
+    const ok = s.state === 'ok';
+    $('state').className = `state ${ok ? 'ok' : 'warn'}`;
+    $('state').textContent = ok ? '正在建图' : ({ paused: '已暂停融合', 'turning too fast': '转头太快，这几帧跳过了' }[s.state] ?? s.state);
+    $('fps').textContent = `${s.fps} 帧/秒 · ${s.ms ?? '—'} ms/帧`;
+    $('points').textContent = s.points.toLocaleString();
+    $('voxels').textContent = s.voxels.toLocaleString();
+    $('frames').textContent = `${s.integrated} / ${s.skipped}`;
+    $('stereo').textContent = `基线 ${(s.baseline * 100).toFixed(1)} cm · 焦距 ${s.focal.toFixed(0)} px`;
+    $('pause').classList.toggle('on', s.paused);
+    $('pause').textContent = s.paused ? '继续融合' : '暂停融合';
+    setPose(s.pose);
+    if (s.version !== version && !cloudBusy && performance.now() - lastCloudAt > 700) loadCloud(s.version);
+  } catch {
+    $('state').className = 'state warn';
+    $('state').textContent = '连不上 recon.py';
+  }
+  setTimeout(poll, 100);
+}
+async function loadCloud(v) {
+  cloudBusy = true;
+  try {
+    applyCloud(parseCloud(await (await fetch(`/cloud?min=${$('minHits').value}`)).arrayBuffer()));
+    version = v;
+  } catch { /* retry next poll */ }
+  lastCloudAt = performance.now();
+  cloudBusy = false;
+}
+const live = $('live');
+live.onload = live.onerror = () => setTimeout(() => (live.src = `/frame.jpg?${Date.now()}`), 80);
+live.src = '/frame.jpg';
+
+// ---- controls ----
+const post = (path) => fetch(path + `?min=${$('minHits').value}`, { method: 'POST' }).then((r) => r.json());
+$('pause').onclick = () => post('/pause');
+$('reset').onclick = async () => { await post('/reset'); trailN = 0; trailGeom.setDrawRange(0, 0); version = -1; };
+$('save').onclick = async () => { const r = await post('/save'); $('state').textContent = `已保存 ${r.points.toLocaleString()} 个点 → ${r.path}`; };
+$('follow').onclick = () => { follow = !follow; $('follow').classList.toggle('on', follow); };
+for (const b of document.querySelectorAll('[data-colour]')) {
+  b.onclick = () => {
+    colourMode = b.dataset.colour;
+    for (const x of document.querySelectorAll('[data-colour]')) x.classList.toggle('on', x === b);
+    if (lastCloud) applyCloud(lastCloud);
+  };
+}
+$('minHits').oninput = () => { $('minHitsVal').textContent = $('minHits').value; version = -1; };
+$('pointSize').oninput = () => { material.size = $('pointSize').value / 1000; $('pointSizeVal').textContent = `${($('pointSize').value / 10).toFixed(1)} cm`; };
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+resize();
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+poll();
+</script>
+</body>
+</html>

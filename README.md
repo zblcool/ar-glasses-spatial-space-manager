@@ -20,6 +20,7 @@ Click any screen to put the real mouse on that display and use its apps directly
 │                                   switch + restore, cursor warp, keep-glasses-clear)
 │       └── camera_helper.m         viture-camera-helper (all three cameras → binary stream)
 ├── tools/camera-viewer/    web page showing what the glasses' cameras see (not part of the app)
+├── tools/recon/            live 3D reconstruction from the tracking cameras (Python, not part of the app)
 ├── app/                    Electron + Vite + TypeScript
 │   ├── electron/           main process (helper supervisor, IPC) + preload
 │   ├── renderer/           three.js scene
@@ -297,7 +298,45 @@ On the page you can:
 
 When you hover over either eye, the page draws a matching horizontal line across both images, so you can compare disparity. If the RGB camera won't open through the SDK, the page offers to open it as a normal webcam in the browser instead.
 
+`-- --log-level 3` turns on the SDK's full logging in the terminal. The VIO library may print the glasses' factory camera calibration there.
+
 `tools/camera-viewer/server.mjs` is a dependency-free Node server. It relays the helper's packets to the page over one streaming HTTP response. The packet format is described at the top of `helper/src/camera_helper.m`.
+
+## Live 3D reconstruction
+
+`tools/recon/` builds a rough 3D model of what's in front of you, live, from the two tracking cameras and the glasses' 6DoF pose:
+
+1. Each stereo pair is rectified and matched (OpenCV semi-global matching) into a depth map.
+2. The depth map is moved into the world with the pose the SDK reported for that frame.
+3. The points are averaged into a 2 cm voxel map, which a three.js page draws as a point cloud next to the glasses' path.
+
+It needs Python 3 with numpy and OpenCV 4 (`pip install -r tools/recon/requirements.txt`; OpenCV 5.0's fisheye calibration is broken in Python). Quit Viture Open Walker first, then:
+
+```bash
+npm run cameras                              # terminal 1: the camera stream (port 8787)
+npm run calibrate -- --square-mm 28.5        # terminal 2: once, writes tools/recon/calib.json
+npm run recon                                # then: http://localhost:8788
+```
+
+**Calibration (once per pair of glasses).** The SDK doesn't publish the camera calibration, so `calibrate.py` measures it with a checkerboard:
+
+1. Open `http://localhost:8787/checkerboard` full screen and measure one square with a ruler. That number is `--square-mm`.
+2. Look at the board with the glasses from many directions. Get near and far, tilt your head, and put the board in every part of the view. A view is captured on its own when both eyes see the board and you hold still. Space captures a view by hand, c solves early, and q quits.
+
+`calibrate.py` solves for each eye's fisheye intrinsics, the stereo extrinsics, and the hand-eye transform from the left camera to the tracked pose. It prints the error: RMS under about 0.5 px and `hand_eye_spread` under about 1 cm are good.
+
+**Scanning.** Move slowly. Frames are skipped while your head turns faster than 60°/s or while the SDK's pose is unstable. On the page you can:
+
+- pause fusion, or clear the map;
+- save the map as a PLY file to `tools/recon/scans/`, which opens in MeshLab or Blender;
+- choose how many frames must see a voxel before it shows (fewer means denser, more means cleaner);
+- colour the points by gray value or by height.
+
+The page also shows the rectified left eye and its disparity map.
+
+**What to expect.** The tested numbers come from a simulated 9 cm fisheye rig. Depth is best from 0.3 to 2 m. Single-frame median error was about 1–2 cm, and the fused map's median error was about 1.2 cm with min-hits 3. Blank walls, glass and dark areas give no depth. Stereo matching uses only the middle of the fisheye view (`--fov-scale 0.75`) with a left-right consistency check, because the outer edges are where calibration is weakest. Other options are in `python3 tools/recon/recon.py --help`.
+
+The pose sent with a frame is the newest one when the frame arrives, not the exact pose at exposure, so fast motion smears the map. The SDK's per-frame pose callback might fix this.
 
 ## Architecture notes
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Camera viewer: shows what the glasses' three cameras see, in a browser.
 //
-//   node tools/camera-viewer/server.mjs [--port 8787] [--no-rgb] [--fake]
+//   node tools/camera-viewer/server.mjs [--port 8787] [--no-rgb] [--log-level 0-3] [--fake]
 //
 // Runs helper/build/viture-camera-helper and relays its packets (see the
 // header of helper/src/camera_helper.m) to the page over one streaming HTTP
@@ -71,7 +71,9 @@ function startHelper() {
     console.error(`helper not found: ${helperPath}\nbuild it with:  make -C helper   (or run with --fake)`);
     process.exit(1);
   }
-  helper = spawn(helperPath, flag('--no-rgb') ? ['--no-rgb'] : [], { stdio: ['pipe', 'pipe', 'inherit'] });
+  const helperArgs = flag('--no-rgb') ? ['--no-rgb'] : [];
+  if (option('--log-level')) helperArgs.push('--log-level', option('--log-level'));
+  helper = spawn(helperPath, helperArgs, { stdio: ['pipe', 'pipe', 'inherit'] });
   let buf = Buffer.alloc(0);
   helper.stdout.on('data', (chunk) => {
     buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
@@ -132,6 +134,9 @@ const server = createServer(async (req, res) => {
   if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(await readFile(join(here, 'index.html')));
+  } else if (req.method === 'GET' && req.url === '/checkerboard') {
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    res.end(await readFile(join(here, 'checkerboard.html')));
   } else if (req.method === 'GET' && req.url === '/stream') {
     res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' });
     const c = { res, busy: false };

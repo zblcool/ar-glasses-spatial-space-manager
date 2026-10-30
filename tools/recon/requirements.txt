@@ -1,0 +1,3 @@
+numpy>=1.24
+# 4.x: OpenCV 5.0's Python cv2.fisheye.calibrate fails on any input.
+opencv-python>=4.8,<5
