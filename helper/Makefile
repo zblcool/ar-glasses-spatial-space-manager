@@ -13,6 +13,7 @@ BUILD    := build
 TARGET   := $(BUILD)/viture-pose-helper
 SRCS     := src/main.c src/usb_enum.c
 DISPLAY  := $(BUILD)/viture-display-helper
+CAMERA   := $(BUILD)/viture-camera-helper
 DYLIBS   := libglasses.dylib libcarina_vio.dylib
 
 CC       ?= clang
@@ -24,7 +25,7 @@ LDFLAGS  := -arch arm64 -mmacosx-version-min=13.0 -L$(SDK_LIB) -lglasses \
 
 .PHONY: all clean check-sdk
 
-all: check-sdk $(TARGET) $(DISPLAY) $(addprefix $(BUILD)/,$(DYLIBS))
+all: check-sdk $(TARGET) $(DISPLAY) $(CAMERA) $(addprefix $(BUILD)/,$(DYLIBS))
 
 check-sdk:
 	@test -f $(SDK_INC)/viture_glasses_provider.h || { echo "Viture SDK headers not found in $(SDK_INC) (set SDK_DIR=...)"; exit 1; }
@@ -35,6 +36,12 @@ $(BUILD):
 
 $(TARGET): $(SRCS) src/usb_enum.h | $(BUILD)
 	$(CC) $(CFLAGS) $(SRCS) $(LDFLAGS) -o $@
+
+# All three cameras, for tools/camera-viewer (Objective-C only for the macOS
+# camera-access prompt).
+$(CAMERA): src/camera_helper.m src/usb_enum.c src/usb_enum.h | $(BUILD)
+	$(CC) $(filter-out -std=c11,$(CFLAGS)) -fobjc-arc src/camera_helper.m src/usb_enum.c $(LDFLAGS) \
+	      -framework Foundation -framework AVFoundation -o $@
 
 # Virtual displays (no Viture SDK dependency).
 $(DISPLAY): src/display_helper.m | $(BUILD)

@@ -8,6 +8,7 @@
     "build": "npm --prefix app run build",
     "start": "npm --prefix app start",
     "helper": "make -C helper",
+    "cameras": "node tools/camera-viewer/server.mjs",
     "package": "npm --prefix app run package"
   }
 }

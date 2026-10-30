@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glasses Cameras</title>
+<style>
+  :root {
+    --bg: #0d0f12; --panel: #161a1f; --line: #262c34; --text: #e6e9ee; --muted: #8b95a3;
+    --accent: #5fb4ff; --ok: #4fd18b; --warn: #f2b84b; --bad: #ff6b6b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .status { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+  .group { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .group > span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  button:hover { border-color: var(--accent); }
+  button.on { background: #1f3a55; color: #cfe8ff; }
+  input[type=range] { width: 110px; accent-color: var(--accent); }
+  .val { font-variant-numeric: tabular-nums; min-width: 52px; font-size: 12px; color: var(--muted); }
+  main { display: grid; gap: 12px; padding: 12px 16px 24px; grid-template-columns: 1fr 1fr; }
+  main.solo { grid-template-columns: 1fr; }
+  main.solo .cam:not(.focus) { display: none; }
+  .cam { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-width: 0; }
+  .cam.wide { grid-column: 1 / -1; }
+  main.merged .cam.eye-r { display: none; }
+  main.merged .cam.eye-l { grid-column: 1 / -1; }
+  .cam-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  .cam-head b { font-weight: 600; }
+  .cam-head small { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .cam-head .tools { display: flex; gap: 6px; }
+  .cam-head .tools button { padding: 2px 8px; font-size: 12px; }
+  .stage { position: relative; background: #000; min-height: 200px; display: flex; align-items: center; justify-content: center; }
+  .stage canvas, .stage video { display: block; width: 100%; height: auto; max-height: 78vh; object-fit: contain; }
+  .stage .empty { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center; color: var(--muted); text-align: center; padding: 16px; }
+  .stage .empty[hidden] { display: none; }
+  .stage canvas.overlay { position: absolute; inset: 0; width: 100%; height: 100%; max-height: none; pointer-events: none; }
+  .hint { color: var(--muted); font-size: 12px; padding: 0 16px 16px; }
+  .hint kbd { border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font: inherit; }
+  @media (max-width: 760px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>眼镜摄像头看到的世界</h1>
+  <div class="status"><span class="dot" id="dot"></span><span id="statusText">连接中…</span></div>
+</header>
+
+<div class="controls">
+  <div class="group"><span>双目显示</span>
+    <div class="seg" id="mode">
+      <button data-mode="raw" class="on">原图</button>
+      <button data-mode="anaglyph">红蓝 3D</button>
+      <button data-mode="diff">左右差异</button>
+    </div>
+  </div>
+  <div class="group"><span>画面</span>
+    <button id="stretch" class="on" title="把灰度拉伸到整个 0–255 范围，暗处也能看清">自动增强</button>
+    <button id="pair" title="SDK 每次回调给两对图像，切换看第二对">第 1 对</button>
+    <button id="pause" title="空格">暂停</button>
+  </div>
+  <div class="group"><span>追踪摄像头曝光</span>
+    <div class="seg" id="exposure">
+      <button data-exp="auto" class="on">自动</button>
+      <button data-exp="manual">手动</button>
+    </div>
+    <input type="range" id="expMs" min="0.01" max="8" step="0.01" value="4" disabled>
+    <span class="val" id="expMsVal">4.00 ms</span>
+    <input type="range" id="expGain" min="0" max="15" step="1" value="4" disabled>
+    <span class="val" id="expGainVal">增益 4</span>
+  </div>
+</div>
+
+<main id="grid">
+  <section class="cam eye-l" id="camL">
+    <div class="cam-head"><b id="titleL">左 · 追踪摄像头</b><small id="infoL">—</small>
+      <div class="tools"><button data-solo="camL">放大</button><button data-snap="L">截图</button></div></div>
+    <div class="stage"><canvas id="canvasL"></canvas><canvas class="overlay" id="overL"></canvas><div class="empty" id="emptyL">等待画面…</div></div>
+  </section>
+  <section class="cam eye-r" id="camR">
+    <div class="cam-head"><b>右 · 追踪摄像头</b><small id="infoR">—</small>
+      <div class="tools"><button data-solo="camR">放大</button><button data-snap="R">截图</button></div></div>
+    <div class="stage"><canvas id="canvasR"></canvas><canvas class="overlay" id="overR"></canvas><div class="empty" id="emptyR">等待画面…</div></div>
+  </section>
+  <section class="cam wide" id="camRGB">
+    <div class="cam-head"><b>RGB 彩色摄像头</b><small id="infoRGB">—</small>
+      <div class="tools"><button id="rgbToggle" class="on">开</button><button data-solo="camRGB">放大</button><button data-snap="RGB">截图</button></div></div>
+    <div class="stage"><canvas id="canvasRGB"></canvas><video id="videoRGB" muted playsinline hidden></video>
+      <div class="empty" id="emptyRGB"><span id="rgbMsg">等待画面…</span><button id="browserCam" hidden>改用浏览器打开 RGB 摄像头</button></div></div>
+  </section>
+</main>
+<p class="hint">鼠标移到左/右画面上会在两边画同一条水平线：同一个物体在左右图里的横向偏移（视差）越大，离你越近。<kbd>空格</kbd> 暂停，<kbd>Esc</kbd> 退出放大。</p>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const MAGIC = 0x4d414356, HEADER = 24;
+
+const state = {
+  mode: 'raw', stretch: true, paused: false, pair: 0,
+  stereo: null,       // { w, h, data: Uint8Array (left plane + right plane), t }
+  rgb: null,          // Blob (JPEG)
+  rgbBusy: false,
+  hoverY: null,       // 0..1 in stereo image space
+  fps: { stereo: new Rate(), rgb: new Rate() },
+  rgbSource: 'helper',
+};
+
+function Rate() { this.times = []; }
+Rate.prototype.tick = function () { const now = performance.now(); this.times.push(now); while (this.times[0] < now - 1000) this.times.shift(); };
+Rate.prototype.value = function () { const now = performance.now(); while (this.times.length && this.times[0] < now - 1000) this.times.shift(); return this.times.length; };
+
+// ---- stream ---------------------------------------------------------------
+
+async function connect() {
+  try {
+    const res = await fetch('/stream');
+    const reader = res.body.getReader();
+    let buf = new Uint8Array(0);
+    setStatus('warn', '已连接，等待眼镜…');
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf = concat(buf, value);
+      let off = 0;
+      while (buf.length - off >= HEADER) {
+        const dv = new DataView(buf.buffer, buf.byteOffset + off, HEADER);
+        if (dv.getUint32(0, true) !== MAGIC) { off = buf.length; break; }
+        const len = dv.getUint32(12, true);
+        if (buf.length - off < HEADER + len) break;
+        const kind = dv.getUint8(4), w = dv.getUint16(8, true), h = dv.getUint16(10, true), t = dv.getFloat64(16, true);
+        onPacket(kind, w, h, t, buf.slice(off + HEADER, off + HEADER + len));
+        off += HEADER + len;
+      }
+      buf = off ? buf.slice(off) : buf;
+    }
+  } catch (err) {
+    console.warn(err);
+  }
+  setStatus('bad', '与本地服务断开，2 秒后重连…');
+  setTimeout(connect, 2000);
+}
+
+function concat(a, b) {
+  if (!a.length) return b;
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a); out.set(b, a.length);
+  return out;
+}
+
+function onPacket(kind, w, h, t, payload) {
+  if (kind === 1) {
+    state.fps.stereo.tick();
+    if (!state.paused) state.stereo = { w, h, data: payload, t, fresh: true };
+  } else if (kind === 2) {
+    state.fps.rgb.tick();
+    if (!state.paused && state.rgbSource === 'helper') { state.rgb = { blob: new Blob([payload], { type: 'image/jpeg' }), w, h }; }
+  } else if (kind === 3) {
+    onStatus(JSON.parse(new TextDecoder().decode(payload)));
+  }
+}
+
+function onStatus(s) {
+  if (s.status === 'streaming') setStatus('ok', `${s.device} · 推流中`);
+  else if (s.status === 'searching') setStatus('warn', '没找到眼镜，请插上 Luma Ultra…');
+  else if (s.status === 'lost') setStatus('warn', '眼镜断开了，重新寻找中…');
+  else if (s.status === 'error') setStatus('bad', s.message);
+  if (s.rgb) {
+    const on = s.rgb === 'on';
+    $('rgbToggle').classList.toggle('on', on);
+    $('rgbToggle').textContent = on ? '开' : '关';
+    if (state.rgbSource === 'helper') {
+      $('rgbMsg').textContent = { on: '等待画面…', off: 'RGB 摄像头已关闭', unsupported: '这副眼镜没有通过 SDK 提供 RGB 摄像头', error: `RGB 摄像头打不开：${s.message}` }[s.rgb];
+      $('browserCam').hidden = on;
+      if (!on) { state.rgb = null; showEmpty('RGB', true); }
+    }
+  }
+  if ('pair' in s) { state.pair = s.pair; $('pair').textContent = `第 ${s.pair + 1} 对`; }
+}
+
+function setStatus(kind, text) {
+  $('dot').className = `dot ${kind}`;
+  $('statusText').textContent = text;
+}
+
+// ---- drawing ----------------------------------------------------------------
+
+const cL = $('canvasL'), cR = $('canvasR'), cRGB = $('canvasRGB');
+const xL = cL.getContext('2d'), xR = cR.getContext('2d'), xRGB = cRGB.getContext('2d');
+let imgL = null, imgR = null;
+
+/** Lookup table that maps the 1st..99th percentile of both eyes to 0..255. */
+function levels(data, n) {
+  const lut = new Uint8Array(256);
+  if (!state.stretch) { for (let i = 0; i < 256; i++) lut[i] = i; return lut; }
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < data.length; i += 7) hist[data[i]]++;
+  const total = Math.ceil(data.length / 7);
+  let lo = 0, hi = 255, acc = 0;
+  for (; lo < 255 && (acc += hist[lo]) < total * 0.01; lo++);
+  acc = 0;
+  for (; hi > 0 && (acc += hist[hi]) < total * 0.01; hi--);
+  if (hi <= lo) hi = lo + 1;
+  for (let i = 0; i < 256; i++) lut[i] = Math.max(0, Math.min(255, Math.round(((i - lo) * 255) / (hi - lo))));
+  return lut;
+}
+
+function drawStereo() {
+  const s = state.stereo;
+  if (!s || !s.fresh) return;
+  s.fresh = false;
+  const { w, h, data } = s, n = w * h;
+  for (const c of [cL, cR]) if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+  if (!imgL || imgL.width !== w || imgL.height !== h) { imgL = new ImageData(w, h); imgR = new ImageData(w, h); }
+  const lut = levels(data, n);
+  const pl = new Uint32Array(imgL.data.buffer), pr = new Uint32Array(imgR.data.buffer);
+  const A = 0xff000000;
+  if (state.mode === 'raw') {
+    for (let i = 0; i < n; i++) {
+      const l = lut[data[i]], r = lut[data[n + i]];
+      pl[i] = A | (l << 16) | (l << 8) | l;
+      pr[i] = A | (r << 16) | (r << 8) | r;
+    }
+  } else if (state.mode === 'anaglyph') {
+    // Left eye in red, right eye in cyan: wear red/cyan glasses to see depth.
+    for (let i = 0; i < n; i++) { const l = lut[data[i]], r = lut[data[n + i]]; pl[i] = A | (r << 16) | (r << 8) | l; }
+  } else {
+    // |L − R|: bright where the eyes disagree, i.e. near things and edges.
+    for (let i = 0; i < n; i++) {
+      const d = Math.min(255, Math.abs(data[i] - data[n + i]) * 3);
+      pl[i] = A | ((d >> 2) << 16) | ((d >> 1) << 8) | d;
+    }
+  }
+  xL.putImageData(imgL, 0, 0);
+  if (state.mode === 'raw') xR.putImageData(imgR, 0, 0);
+  $('infoL').textContent = `${w}×${h} · ${state.fps.stereo.value()} fps`;
+  $('infoR').textContent = `${w}×${h} · ${state.fps.stereo.value()} fps`;
+  showEmpty('L', false); showEmpty('R', false);
+}
+
+async function drawRGB() {
+  if (state.rgbSource === 'browser') {
+    const v = $('videoRGB');
+    if (v.videoWidth && !state.paused) {
+      if (cRGB.width !== v.videoWidth) { cRGB.width = v.videoWidth; cRGB.height = v.videoHeight; }
+      xRGB.drawImage(v, 0, 0);
+      $('infoRGB').textContent = `${v.videoWidth}×${v.videoHeight} · 浏览器摄像头`;
+      showEmpty('RGB', false);
+    }
+    return;
+  }
+  const f = state.rgb;
+  if (!f || state.rgbBusy) return;
+  state.rgb = null;
+  state.rgbBusy = true;
+  try {
+    const bmp = await createImageBitmap(f.blob);
+    if (cRGB.width !== bmp.width) { cRGB.width = bmp.width; cRGB.height = bmp.height; }
+    xRGB.drawImage(bmp, 0, 0);
+    bmp.close();
+    $('infoRGB').textContent = `${cRGB.width}×${cRGB.height} · ${state.fps.rgb.value()} fps · MJPEG`;
+    showEmpty('RGB', false);
+  } catch { /* a corrupt JPEG: skip it */ }
+  state.rgbBusy = false;
+}
+
+function drawOverlay() {
+  for (const [id, c] of [['overL', cL], ['overR', cR]]) {
+    const o = $(id), r = c.getBoundingClientRect();
+    const ow = Math.round(r.width * devicePixelRatio), oh = Math.round(r.height * devicePixelRatio);
+    if (o.width !== ow || o.height !== oh) { o.width = ow; o.height = oh; }
+    const g = o.getContext('2d');
+    g.clearRect(0, 0, o.width, o.height);
+    if (state.hoverY == null || !c.width) continue;
+    // The canvas is letterboxed (object-fit: contain); find the image rect.
+    const scale = Math.min(o.width / c.width, o.height / c.height);
+    const iw = c.width * scale, ih = c.height * scale, ox = (o.width - iw) / 2, oy = (o.height - ih) / 2;
+    const y = oy + state.hoverY * ih;
+    g.strokeStyle = 'rgba(95,180,255,.9)'; g.lineWidth = devicePixelRatio;
+    g.beginPath(); g.moveTo(ox, y); g.lineTo(ox + iw, y); g.stroke();
+  }
+}
+
+function showEmpty(which, show) { $(`empty${which}`).hidden = !show; }
+
+function frame() {
+  drawStereo();
+  drawRGB();
+  drawOverlay();
+  requestAnimationFrame(frame);
+}
+
+// ---- controls ------------------------------------------------------------------
+
+const cmd = (line) => fetch('/cmd', { method: 'POST', body: line }).catch(() => {});
+
+$('mode').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  state.mode = b.dataset.mode;
+  for (const x of $('mode').children) x.classList.toggle('on', x === b);
+  $('grid').classList.toggle('merged', state.mode !== 'raw');
+  $('titleL').textContent = { raw: '左 · 追踪摄像头', anaglyph: '红蓝 3D（左=红，右=青）', diff: '左右差异 |L − R|' }[state.mode];
+  if (state.stereo) state.stereo.fresh = true;
+});
+
+$('stretch').onclick = () => { state.stretch = !state.stretch; $('stretch').classList.toggle('on', state.stretch); if (state.stereo) state.stereo.fresh = true; };
+$('pair').onclick = () => cmd(`pair ${state.pair ? 0 : 1}`);
+const togglePause = () => { state.paused = !state.paused; $('pause').classList.toggle('on', state.paused); $('pause').textContent = state.paused ? '继续' : '暂停'; };
+$('pause').onclick = togglePause;
+
+$('exposure').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  const manual = b.dataset.exp === 'manual';
+  for (const x of $('exposure').children) x.classList.toggle('on', x === b);
+  $('expMs').disabled = $('expGain').disabled = !manual;
+  manual ? sendExposure() : cmd('exposure auto');
+});
+let expTimer = 0;
+function sendExposure() {
+  const ms = Number($('expMs').value), gain = Number($('expGain').value);
+  $('expMsVal').textContent = `${ms.toFixed(2)} ms`;
+  $('expGainVal').textContent = `增益 ${gain}`;
+  clearTimeout(expTimer);
+  expTimer = setTimeout(() => cmd(`exposure ${ms.toFixed(2)} ${gain}`), 120);
+}
+$('expMs').oninput = $('expGain').oninput = sendExposure;
+
+$('rgbToggle').onclick = () => {
+  if (state.rgbSource === 'browser') { stopBrowserCam(); return; }
+  cmd(`rgb ${$('rgbToggle').classList.contains('on') ? 0 : 1}`);
+};
+
+// Fallback: the RGB camera is a plain UVC camera (0c45:636b, "USB Camera" on macOS).
+$('browserCam').onclick = async () => {
+  try {
+    const open = (deviceId) => navigator.mediaDevices.getUserMedia({ video: deviceId ? { deviceId: { exact: deviceId }, width: { ideal: 1920 } } : true });
+    let list = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+    if (list.some((d) => !d.label)) { (await open()).getTracks().forEach((t) => t.stop()); list = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput'); }
+    const cam = list.find((d) => /0c45:636b|viture|usb camera/i.test(d.label));
+    if (!cam) { $('rgbMsg').textContent = `浏览器里没找到眼镜摄像头（看到的：${list.map((d) => d.label).join('、') || '无'}）`; return; }
+    const v = $('videoRGB');
+    v.srcObject = await open(cam.deviceId);
+    await v.play();
+    state.rgbSource = 'browser';
+    $('rgbToggle').classList.add('on'); $('rgbToggle').textContent = '开';
+  } catch (err) {
+    $('rgbMsg').textContent = `浏览器打开摄像头失败：${err.message}`;
+  }
+};
+function stopBrowserCam() {
+  const v = $('videoRGB');
+  v.srcObject?.getTracks().forEach((t) => t.stop());
+  v.srcObject = null;
+  state.rgbSource = 'helper';
+  $('rgbToggle').classList.remove('on'); $('rgbToggle').textContent = '关';
+  $('rgbMsg').textContent = 'RGB 摄像头已关闭';
+  showEmpty('RGB', true);
+}
+
+for (const b of document.querySelectorAll('[data-solo]')) {
+  b.onclick = () => {
+    const grid = $('grid'), cam = $(b.dataset.solo);
+    const on = !(grid.classList.contains('solo') && cam.classList.contains('focus'));
+    for (const c of document.querySelectorAll('.cam')) c.classList.remove('focus');
+    grid.classList.toggle('solo', on);
+    cam.classList.toggle('focus', on);
+    for (const x of document.querySelectorAll('[data-solo]')) x.textContent = '放大';
+    if (on) b.textContent = '还原';
+    if (state.stereo) state.stereo.fresh = true;
+  };
+}
+
+for (const b of document.querySelectorAll('[data-snap]')) {
+  b.onclick = () => {
+    const c = $(`canvas${b.dataset.snap}`);
+    if (!c.width) return;
+    const a = document.createElement('a');
+    a.download = `glasses-${b.dataset.snap.toLowerCase()}-${new Date().toISOString().replace(/[:.]/g, '-')}.png`;
+    a.href = c.toDataURL('image/png');
+    a.click();
+  };
+}
+
+for (const c of [cL, cR]) {
+  c.parentElement.addEventListener('mousemove', (e) => {
+    if (!c.width) return;
+    const r = c.getBoundingClientRect();
+    const scale = Math.min(r.width / c.width, r.height / c.height);
+    const ih = c.height * scale, oy = (r.height - ih) / 2;
+    const y = (e.clientY - r.top - oy) / ih;
+    state.hoverY = y >= 0 && y <= 1 ? y : null;
+  });
+  c.parentElement.addEventListener('mouseleave', () => (state.hoverY = null));
+}
+
+addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); togglePause(); }
+  if (e.key === 'Escape' && $('grid').classList.contains('solo')) document.querySelector('.cam.focus [data-solo]').click();
+});
+
+connect();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
