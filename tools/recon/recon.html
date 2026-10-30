@@ -48,6 +48,7 @@
     <button id="reset">清空</button>
     <button id="save">保存 PLY</button>
     <button id="follow" class="on">跟随眼镜</button>
+    <button id="recalibrate">重新标定</button>
   </div>
   <div class="row"><span>着色</span>
     <button data-colour="gray" class="on">灰度</button>
@@ -165,6 +166,7 @@ let version = -1, cloudBusy = false, lastCloudAt = 0;
 async function poll() {
   try {
     const s = await (await fetch('/state')).json();
+    if (s.mode !== 'recon') { location.href = '/calibrate'; return; }
     const ok = s.state === 'ok';
     $('state').className = `state ${ok ? 'ok' : 'warn'}`;
     $('state').textContent = ok ? '正在建图' : ({ paused: '已暂停融合', 'turning too fast': '转头太快，这几帧跳过了' }[s.state] ?? s.state);
@@ -201,6 +203,11 @@ const post = (path) => fetch(path + `?min=${$('minHits').value}`, { method: 'POS
 $('pause').onclick = () => post('/pause');
 $('reset').onclick = async () => { await post('/reset'); trailN = 0; trailGeom.setDrawRange(0, 0); version = -1; };
 $('save').onclick = async () => { const r = await post('/save'); $('state').textContent = `已保存 ${r.points.toLocaleString()} 个点 → ${r.path}`; };
+$('recalibrate').onclick = async () => {
+  if (!confirm('重新标定会清空当前地图，继续吗？')) return;
+  await fetch('/recalibrate', { method: 'POST' });
+  location.href = '/calibrate';
+};
 $('follow').onclick = () => { follow = !follow; $('follow').classList.toggle('on', follow); };
 for (const b of document.querySelectorAll('[data-colour]')) {
   b.onclick = () => {

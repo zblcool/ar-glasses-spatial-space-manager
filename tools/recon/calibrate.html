@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera Calibration</title>
+<style>
+  /* Everything around the board stays light: dark shapes next to it confuse the corner detector. */
+  :root { --muted: #8a8f98; --ok: #1f9d55; --warn: #c27c0e; --bad: #c0392b; }
+  html, body { margin: 0; height: 100%; background: #fff; color: #333; font: 14px/1.45 -apple-system, "PingFang SC", system-ui, sans-serif; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  svg { height: min(78vh, 50vw); width: auto; transition: outline-color .2s; outline: 10px solid transparent; outline-offset: 0; }
+  svg.flash { outline-color: #9be7b8; }
+  .card { position: fixed; background: #f6f7f9; border-radius: 10px; padding: 10px 14px; color: #444; }
+  #status { top: 12px; left: 12px; max-width: min(360px, 40vw); }
+  #msg { font-size: 20px; font-weight: 600; color: #222; }
+  #msg.ok { color: var(--ok); } #msg.warn { color: var(--warn); } #msg.bad { color: var(--bad); }
+  .bar { height: 6px; background: #e3e6ea; border-radius: 3px; margin: 8px 0 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: #7cc4ff; transition: width .3s; }
+  #count { color: var(--muted); font-size: 12px; }
+  #err { color: var(--bad); font-size: 12px; margin-top: 6px; }
+  #solve { margin-top: 8px; font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px; border: 1px solid #cfd5dc; background: #fff; cursor: pointer; }
+  #tips { bottom: 12px; left: 12px; max-width: min(360px, 40vw); font-size: 12px; color: #666; }
+  #tips ol { margin: 4px 0 0; padding-left: 18px; }
+  #side { position: fixed; top: 12px; right: 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+  #preview { width: min(320px, 24vw); border-radius: 6px; opacity: .85; display: block; }
+  #cover { width: min(160px, 14vw); aspect-ratio: 4 / 3; background: #eef0f3; border-radius: 6px; position: relative; }
+  #cover b { position: absolute; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: #7cc4ff; }
+  .label { font-size: 11px; color: var(--muted); text-align: right; }
+  #start { position: fixed; inset: 0; background: rgba(255,255,255,.94); display: flex; flex-direction: column; gap: 14px; align-items: center; justify-content: center; text-align: center; cursor: pointer; }
+  #start h1 { margin: 0; font-size: 26px; }
+  #start p { margin: 0; color: #555; max-width: 520px; padding: 0 16px; }
+  #start button { font: inherit; font-size: 16px; padding: 10px 22px; border-radius: 10px; border: 0; background: #2f80ed; color: #fff; cursor: pointer; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<!-- 10 × 7 squares = 9 × 6 inner corners, one-square white margin. -->
+<svg id="board" viewBox="-1 -1 12 9" xmlns="http://www.w3.org/2000/svg"></svg>
+
+<div class="card" id="status">
+  <div id="msg">连接中…</div>
+  <div class="bar"><i id="bar"></i></div>
+  <div id="count"></div>
+  <div id="err" hidden></div>
+  <button id="solve" hidden>现在计算</button>
+</div>
+<div id="side">
+  <img id="preview" alt="">
+  <div class="label">眼镜看到的（左 / 右）</div>
+  <div id="cover"></div>
+  <div class="label">已拍到的位置</div>
+</div>
+<div class="card" id="tips">
+  第一次使用要先标定（只做一次），之后会自动进入 3D 重建。
+  <ol>
+    <li>戴上眼镜，看着这个棋盘格。</li>
+    <li>每次换一个角度：歪头、抬头、低头，靠近 30 cm 再退远到 1 m。</li>
+    <li>停住约半秒就会自动拍，边框闪绿就是拍到了。</li>
+    <li>让棋盘格出现在视野的各个位置（右上小图会标出来）。</li>
+  </ol>
+</div>
+<div id="start">
+  <h1>摄像头标定</h1>
+  <p>屏幕会全屏显示一个棋盘格。戴着眼镜从不同角度看它，大约 25 个角度、一两分钟就好。不用量尺寸。</p>
+  <button>开始</button>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let html = '<rect x="-1" y="-1" width="12" height="9" fill="#fff"/>';
+for (let y = 0; y < 7; y++) for (let x = 0; x < 10; x++) if ((x + y) % 2 === 0) html += `<rect x="${x}" y="${y}" width="1" height="1" fill="#000"/>`;
+$('board').innerHTML = html;
+
+$('start').onclick = () => {
+  document.documentElement.requestFullscreen?.().catch(() => {});
+  $('start').hidden = true;
+};
+
+$('solve').onclick = () => fetch('/calib-solve', { method: 'POST' });
+
+let lastCapture = 0;
+async function poll() {
+  try {
+    const s = await (await fetch('/calib-state')).json();
+    if (s.mode === 'recon') {
+      $('msg').textContent = '标定完成，进入 3D 重建…';
+      $('msg').className = 'ok';
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      setTimeout(() => (location.href = '/'), 1200);
+      return;
+    }
+    const msg = s.stream ?? s.message;
+    $('msg').textContent = msg;
+    $('msg').className = s.stream ? 'bad' : s.board ? 'ok' : s.solving ? 'warn' : '';
+    $('bar').style.width = `${Math.min(100, (100 * s.views) / s.target)}%`;
+    $('count').textContent = s.solving ? '正在计算，十几秒…' : `已拍 ${s.views} / ${s.target}`;
+    $('solve').hidden = s.solving || s.views < 12;
+    $('err').hidden = !s.error;
+    $('err').textContent = s.error ?? '';
+    $('cover').innerHTML = (s.coverage ?? []).map(([x, y]) => `<b style="left:${x * 100}%;top:${y * 100}%"></b>`).join('');
+    if (s.captured_at && s.captured_at !== lastCapture) {
+      if (lastCapture) { $('board').classList.add('flash'); setTimeout(() => $('board').classList.remove('flash'), 350); }
+      lastCapture = s.captured_at;
+    }
+  } catch {
+    $('msg').textContent = '连不上本地服务（npm run scan 还开着吗？）';
+    $('msg').className = 'bad';
+  }
+  setTimeout(poll, 200);
+}
+const preview = $('preview');
+preview.onload = preview.onerror = () => setTimeout(() => (preview.src = `/calib-preview.jpg?${Date.now()}`), 250);
+preview.src = '/calib-preview.jpg';
+poll();
+</script>
+</body>
+</html>
