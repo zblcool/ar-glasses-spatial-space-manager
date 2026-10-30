@@ -9,9 +9,12 @@ been still for a moment. After enough views it solves for:
   - the right eye relative to the left (stereo extrinsics);
   - the left eye relative to the glasses' tracked pose (hand-eye), which
     places the depth in the world;
-  - the board's real size: the SDK's head positions are in metres, so the
-    board's scale is solved together with the hand-eye (no ruler needed),
-    as long as the head also moves, not only turns, between views.
+  - the board's real size, in one of three ways (Calibrator.method):
+    "screen": from the display's physical size (screens.py), the default;
+    "manual": measured with a ruler and typed in;
+    "auto":   solved together with the hand-eye, since the SDK's head
+              positions are in metres (needs the head to move, not only turn).
+    With a known size the auto estimate is still reported, as a cross-check.
 """
 
 from __future__ import annotations
@@ -78,7 +81,7 @@ def hand_eye(T_world_dev: list[np.ndarray], T_cam_board: list[np.ndarray], solve
                 As.append(A)
                 Bs.append(B)
     if len(As) < 3:
-        raise ValueError("not enough head rotation between views; turn and tilt your head more")
+        raise ValueError("头部转动的角度不够，多歪头、抬头、低头")
     alpha = np.array([cv2.Rodrigues(A[:3, :3])[0].ravel() for A in As])
     beta = np.array([cv2.Rodrigues(B[:3, :3])[0].ravel() for B in Bs])
     U, _, Vt = np.linalg.svd(beta.T @ alpha)
@@ -93,7 +96,7 @@ def hand_eye(T_world_dev: list[np.ndarray], T_cam_board: list[np.ndarray], solve
         s = 1.0
         t = np.linalg.lstsq(M[:, :3], v - M[:, 3], rcond=None)[0]
     if not s > 0:
-        raise ValueError("could not work out the board's size; move your head closer and further, not only turn it")
+        raise ValueError("推算不出格子大小：头要前后移动（靠近、退远），不只是转动")
     return make_T(R, t), s
 
 
@@ -115,6 +118,10 @@ def solve(views: list[dict], size: tuple[int, int], square: float | None = None)
     poses = [v["pose"] for v in views]
     boards = [board_pose(obj, c, K1, D1) for c in L]
     X, s = hand_eye(poses, boards, solve_scale=square is None)
+    try:
+        square_vio = unit * (s if square is None else hand_eye(poses, boards, solve_scale=True)[1])
+    except ValueError:
+        square_vio = float("nan")
     # Everything measured in board units becomes metres.
     Ts = Ts * s
     boards = [make_T(B[:3, :3], B[:3, 3] * s) for B in boards]
@@ -129,6 +136,7 @@ def solve(views: list[dict], size: tuple[int, int], square: float | None = None)
         "rms_stereo_px": float(rms_s),
         "baseline_m": float(np.linalg.norm(Ts)),
         "square_m": float(unit * s),
+        "square_vio_m": float(square_vio),
         "hand_eye_spread_m": spread,
     }
     return Calibration(size, K1, D1, K2, D2, Rs, Ts.reshape(3, 1), X), stats
@@ -138,8 +146,12 @@ class Calibrator:
     """Collects views from live frames (step) and solves on a thread once it
     has `target` of them. state() feeds the calibration page."""
 
-    def __init__(self, target: int = 25, square: float | None = None):
-        self.target, self.square = target, square
+    METHODS = ("screen", "manual", "auto")
+
+    def __init__(self, target: int = 25, method: str = "auto", square: float | None = None):
+        self.target = target
+        self.method = method  # see the module docstring
+        self.square = square  # metres; required unless method == "auto"
         self.views: list[dict] = []
         self.history: deque = deque()  # (time, T_world_dev)
         self.last_detect = 0.0
@@ -158,7 +170,8 @@ class Calibrator:
         return {
             "views": len(self.views), "target": self.target, "message": self.message,
             "board": self.board_seen, "solving": self.solving, "error": self.error,
-            "captured_at": self.captured_at,
+            "captured_at": self.captured_at, "method": self.method,
+            "square_mm": round(self.square * 1000, 3) if self.square else None,
             "coverage": [[float(v["centre"][0] / w), float(v["centre"][1] / h)] for v in self.views],
         }
 
@@ -212,9 +225,22 @@ class Calibrator:
                 if len(self.views) >= self.target:
                     self.solve_now()
 
+    def configure(self, method: str, square: float | None) -> None:
+        if method not in self.METHODS:
+            raise ValueError(f"method must be one of {self.METHODS}")
+        self.method, self.square = method, square
+        self.error = None
+        if method != "auto" and not square:
+            self.message = "先填写格子的边长"
+        elif len(self.views) >= self.target:
+            self.solve_now()
+
     def solve_now(self) -> bool:
         """Solve with the views so far (at least 12)."""
         if self.solving or self.result or len(self.views) < 12:
+            return False
+        if self.method != "auto" and not self.square:
+            self.error = "还不知道格子的边长：填上量到的毫米数，或换一种尺寸方式。"
             return False
         self.solving = True
         self.error = None
@@ -224,14 +250,19 @@ class Calibrator:
 
     def _solve(self) -> None:
         try:
-            calib, stats = solve(self.views, self.size, self.square)
+            calib, stats = solve(self.views, self.size, self.square if self.method != "auto" else None)
+            stats["square_method"] = self.method
+            given, vio = stats["square_m"], stats["square_vio_m"]
+            if self.method != "auto" and vio > 0 and abs(vio / given - 1) > 0.15:
+                hint = "检查浏览器缩放是否 100%、棋盘格是否在 Mac 自己的屏幕上" if self.method == "screen" else "再量一次"
+                raise ValueError(f"格子大小对不上：设定 {given * 1000:.2f} mm，眼镜定位估算约 {vio * 1000:.1f} mm。{hint}，或点「更改」换一种方式")
             if stats["rms_stereo_px"] > 1.5 or stats["hand_eye_spread_m"] > 0.03:
-                raise ValueError(f"误差偏大（重投影 {stats['rms_stereo_px']:.2f} px，手眼 {stats['hand_eye_spread_m'] * 100:.1f} cm）")
+                raise ValueError(f"误差偏大（重投影 {stats['rms_stereo_px']:.2f} px，手眼 {stats['hand_eye_spread_m'] * 100:.1f} cm）。再多拍几个不同角度和远近的画面")
             self.result = (calib, stats)
             self.message = "标定完成"
         except (cv2.error, ValueError) as err:
             # Keep the views and ask for more variety.
-            self.error = f"{err}。再多拍几个不同角度和远近的画面。"
+            self.error = f"{err}。"
             self.target = len(self.views) + 8
             self.message = "需要更多角度"
         finally:

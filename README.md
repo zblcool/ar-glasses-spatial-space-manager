@@ -320,7 +320,12 @@ Ctrl-C in its terminal stops everything. Arguments after `--` go to `recon.py`; 
 
 **First run: calibration.** The SDK doesn't publish the camera calibration, so the page calibrates the cameras first. It only needs doing once per pair of glasses:
 
-1. Click 开始. The screen shows a checkerboard full screen.
+1. Choose how the board's real size is found, then click 开始. The screen shows a checkerboard full screen. There are three ways to get the size:
+   - **按屏幕尺寸 (default):** `tools/recon/screens.py` reads the Mac display's physical size and point size from CoreGraphics. The page works out the square size from that, the browser zoom, and the board's on-screen size. For example, a 13.6" MacBook Air M2 is 290.3 mm across 1470 points at the default scaling, so an 89 px square is 17.6 mm. Show the board on the Mac's own screen.
+   - **尺子量:** type in a square's measured side, now or later from the status card.
+   - **定位推算:** solved from the SDK's metric head poses. Move your head closer and further, not only turn it.
+
+   With the first two, the head-pose estimate is still worked out as a cross-check. If the two differ by more than 15%, calibration stops and says so; the usual cause is browser zoom or the board being on the wrong screen. The 更改 button switches method without losing the captured views.
 2. Look at the checkerboard from many angles: tilt your head, move closer and further, and put the board in every part of the view. A view is captured when both eyes see the board and you hold still for about half a second; the border flashes green.
 3. After 25 views it solves on its own, or press 现在计算 once you have 12 or more.
 
@@ -329,7 +334,7 @@ The calibration solves for:
 - each eye's fisheye intrinsics;
 - the stereo extrinsics;
 - the hand-eye transform from the left camera to the tracked pose;
-- the board's size. The SDK's head positions are in metres, so there's nothing to measure.
+- the board's size, if you chose 定位推算.
 
 The result goes to `tools/recon/calib.json`. If the error is too large, the page asks for more views. Later runs go straight to reconstruction, and the 重新标定 button calibrates again.
 
