@@ -20,6 +20,7 @@ export type ControlAction =
   | { kind: 'grid' }
   | { kind: 'skybox' }
   | { kind: 'cinema' }
+  | { kind: 'seeThrough' }
   | { kind: 'close' };
 
 export interface ControlState {
@@ -38,6 +39,9 @@ export interface ControlState {
   skybox: Prefs['skybox'];
   /** A screen is in cinema mode. */
   cinema: boolean;
+  /** See-through on, and what it shows (e.g. "Glasses cam", "Starting…"). */
+  seeThrough: boolean;
+  seeThroughLine: string;
   /** e.g. "Luma Ultra · 3DoF" or "Waiting for glasses…" */
   deviceLine: string;
 }
@@ -58,7 +62,7 @@ interface Button {
 
 /**
  * Viture-style control center: a glass panel that opens in front of the user,
- * with anchor modes, recenter, 3D, 6DoF, scenery, grid, cinema, hands and debug toggles.
+ * with anchor modes, recenter, 3D, 6DoF, scenery, grid, cinema, see-through, hands and debug toggles.
  * Drawn into a canvas; clicks are resolved from the ray hit's UV.
  */
 export class ControlCenter {
@@ -177,6 +181,7 @@ export class ControlCenter {
       ['Sky', s.skybox === 'off' ? 'Off' : 'Panorama', 'sky', { kind: 'skybox' }, s.skybox !== 'off'],
       ['Grid', s.grid ? 'On' : 'Off', 'grid', { kind: 'grid' }, s.grid],
       ['Cinema', s.cinema ? 'On' : 'Off', 'cinema', { kind: 'cinema' }, s.cinema],
+      ['See-through', s.seeThroughLine, 'eye', { kind: 'seeThrough' }, s.seeThrough],
       ['Hands', s.handsLine, 'hand', { kind: 'hands' }, s.hands],
       ['Hand Cam', s.handsCamera === 'glasses' ? 'Glasses' : 'Mac', s.handsCamera === 'glasses' ? 'head' : 'laptop', { kind: 'handsCamera' }, false],
       ['Debug', s.debug ? 'Shown' : 'Hidden', 'debug', { kind: 'debug' }, s.debug],

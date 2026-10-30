@@ -472,6 +472,10 @@ export class Interaction {
       case 'T':
         this.hooks.toggleCinema();
         break;
+      case 'v':
+      case 'V':
+        this.hooks.controlAction({ kind: 'seeThrough' });
+        break;
       case '.':
       case ',':
         if (sel) {
@@ -547,6 +551,7 @@ export const HELP: Array<[string, string]> = [
   ['pinch', 'Hands on: point = move dot, pinch = click / drag'],
   ['pinch+push', 'hold a screen, push hand away / pull back: move it far / near'],
   ['T', 'cinema: send screen far away, huge'],
+  ['V', 'see-through: camera → outlines only → off'],
   ['wheel', 'scale screen · ⌥ wheel: distance'],
   ['Tab', 'cycle selection (⇧ reverse)'],
   ['G', 'select screen in centre of view'],

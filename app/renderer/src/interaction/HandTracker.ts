@@ -36,13 +36,13 @@ const LOST_GRACE_MS = 200;
  * the ray goes from your eyes through your hand. Its image is not mirrored:
  * the image's left is your left.
  */
-const GLASSES_CAMERA = /0c45:636b|viture/i;
+export const GLASSES_CAMERA = /0c45:636b|viture/i;
 /**
  * Assumed horizontal FOV of the glasses' camera (degrees); maps the image to
  * view directions. Not in the SDK docs. Raise it if the dot runs ahead of
  * your hand, lower it if it lags behind.
  */
-const GLASSES_CAMERA_HFOV = 75;
+export const GLASSES_CAMERA_HFOV = 75;
 
 export type HandCamera = 'glasses' | 'mac';
 
@@ -214,10 +214,10 @@ export class HandTracker {
 }
 
 /** Open the preferred camera; the glasses' falls back to the Mac's when it isn't there. */
-async function openCamera(prefer: HandCamera): Promise<{ stream: MediaStream; camera: HandCamera }> {
+export async function openCamera(prefer: HandCamera, width = 640, height = 480): Promise<{ stream: MediaStream; camera: HandCamera }> {
   const open = (deviceId?: string) =>
     navigator.mediaDevices.getUserMedia({
-      video: { deviceId: deviceId ? { exact: deviceId } : undefined, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
+      video: { deviceId: deviceId ? { exact: deviceId } : undefined, width: { ideal: width }, height: { ideal: height }, frameRate: { ideal: 30 } },
       audio: false,
     });
   const cameras = async () => (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
@@ -266,7 +266,7 @@ function clamp(v: number, limit: number): number {
   return Math.max(-limit, Math.min(limit, v));
 }
 
-function describe(err: unknown): string {
+export function describe(err: unknown): string {
   if (err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'SecurityError')) {
     return 'camera access denied — allow it in System Settings → Privacy & Security → Camera';
   }

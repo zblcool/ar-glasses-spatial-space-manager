@@ -9,3 +9,5 @@ tools/recon/calib.json
 tools/recon/scans/
 __pycache__/
 tools/recon/.venv/
+tools/recon/captures/
+tools/capture/build/

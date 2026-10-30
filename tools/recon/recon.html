@@ -24,7 +24,15 @@
   dt { color: var(--muted); } dd { margin: 0; }
   .state { font-size: 13px; } .state.ok { color: var(--ok); } .state.warn { color: var(--warn); }
   .hint { color: var(--muted); font-size: 12px; margin: 0; }
-  #toggle { display: none; }
+  #toggle, [hidden] { display: none !important; }
+  section { border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+  h2 { font-size: 14px; margin: 0; font-weight: 600; }
+  select { background: #161a1f; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; font: inherit; font-size: 13px; max-width: 100%; }
+  #rgb { max-height: 180px; object-fit: contain; }
+  button.rec { background: #5a1f24; color: #ffd9dc; border-color: #8a2f36; }
+  button:disabled { opacity: .45; cursor: default; }
+  .bar { height: 6px; border-radius: 3px; background: #1d232b; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .4s; }
   @media (max-width: 640px) { aside { top: auto; bottom: 12px; max-height: 50vh; } }
 </style>
 <script type="importmap">
@@ -55,16 +63,26 @@
     <button id="follow" class="on">跟随眼镜</button>
     <button id="recalibrate">重新标定</button>
   </div>
+  <div class="row" id="shows"><span>显示</span>
+    <button data-show="surface" class="on">表面</button>
+    <button data-show="cloud">点云</button>
+    <button data-show="model" id="showModelTab" hidden>模型</button>
+  </div>
+  <div class="row"><span>扫描物体</span>
+    <button id="object">框住眼前的物体</button>
+    <input type="range" id="boxSize" min="20" max="150" value="60"><span id="boxSizeVal">60 cm</span>
+  </div>
   <div class="row"><span>着色</span>
     <button data-colour="gray" class="on">灰度</button>
     <button data-colour="height">高度</button>
   </div>
   <div class="row"><span>去噪（至少被看到几次）</span><input type="range" id="minHits" min="1" max="10" value="3"><span id="minHitsVal">3</span></div>
-  <div class="row"><span>点大小</span><input type="range" id="pointSize" min="4" max="40" value="16"><span id="pointSizeVal">1.6 cm</span></div>
+  <div class="row" id="pointRow" hidden><span>点大小</span><input type="range" id="pointSize" min="4" max="40" value="16"><span id="pointSizeVal">1.6 cm</span></div>
   <dl>
     <dt>处理速度</dt><dd id="fps">—</dd>
     <dt>本帧深度点</dt><dd id="points">—</dd>
     <dt>地图体素</dt><dd id="voxels">—</dd>
+    <dt>表面</dt><dd id="surface">—</dd>
     <dt>已融合 / 跳过</dt><dd id="frames">—</dd>
     <dt>双目</dt><dd id="stereo">—</dd>
     <dt>标定</dt><dd id="calib">—</dd>
@@ -72,11 +90,41 @@
   </dl>
   <p class="hint" id="oldCalib" hidden style="color:var(--warn)">这份标定是旧版本做的（没记录棋盘格覆盖范围），建议点「重新标定」，结果会准很多。</p>
   <p class="hint">慢慢转头、走动，近处（0.3–2.5 米）效果最好。拖动旋转视角，滚轮缩放，右键平移。</p>
+  <section>
+    <h2>拍照建模（Object Capture）</h2>
+    <div class="row"><button id="record">开始录制</button><span id="recInfo"></span></div>
+    <img id="rgb" alt="" hidden>
+    <div class="row" id="rgbProblem" hidden><span id="rgbMsg" style="color:var(--warn)"></span><button id="browserCam">改用浏览器打开眼镜摄像头</button></div>
+    <video id="camVideo" muted playsinline hidden></video>
+    <div class="row">
+      <select id="captureList"></select>
+      <select id="detail">
+        <option value="preview">预览（最快）</option>
+        <option value="reduced">较低</option>
+        <option value="medium" selected>中等</option>
+        <option value="full">完整（慢）</option>
+      </select>
+      <button id="build">生成模型</button>
+    </div>
+    <div id="buildBox" hidden>
+      <div class="bar"><div id="buildBar"></div></div>
+      <div class="row" style="margin-top:6px"><span id="buildInfo"></span><button id="buildCancel">取消</button></div>
+    </div>
+    <div class="row" id="modelBtns" hidden>
+      <button id="viewModel">在这里查看</button>
+      <button id="openUsdz">用「预览」打开</button>
+      <button id="openFolder">打开文件夹</button>
+    </div>
+    <p class="hint">把物体放在有花纹的桌面或地上（别放纯白桌面），点「开始录制」，绕着它慢慢走一圈，再抬高一点绕第二圈，最后从上面看一下。每移动约 4 厘米或转 6° 自动拍一张最清晰的，40–150 张比较好。物体要被拍全，背景尽量别动。</p>
+  </section>
+  <p class="hint">扫描物体：看着物体点「框住眼前的物体」，然后绕着它慢慢走一圈，从上方和侧面都看看。框里用 5 毫米的细格子，框外的不再记录。</p>
 </aside>
 
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 
 const $ = (id) => document.getElementById(id);
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -93,24 +141,40 @@ const grid = new THREE.GridHelper(10, 20, 0x2a3440, 0x1a2028);
 grid.position.y = -1.6;
 scene.add(grid);
 
-// ---- point cloud ----
+// ---- point cloud and surface ----
 const geom = new THREE.BufferGeometry();
 const material = new THREE.PointsMaterial({ size: 0.016, vertexColors: true, sizeAttenuation: true });
 const cloud = new THREE.Points(geom, material);
+cloud.visible = false;
 scene.add(cloud);
-let colourMode = 'gray', lastCloud = null;
+const meshGeom = new THREE.BufferGeometry();
+const surface = new THREE.Mesh(meshGeom, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, side: THREE.DoubleSide }));
+scene.add(surface);
+scene.add(new THREE.HemisphereLight(0xdde6ff, 0x30281f, 1.2));
+const headlight = new THREE.DirectionalLight(0xffffff, 1.6);
+headlight.position.set(0.3, 0.5, 1);
+camera.add(headlight);
+scene.add(camera);
+const boxHelper = new THREE.Box3Helper(new THREE.Box3(), 0x4fd18b);
+boxHelper.visible = false;
+scene.add(boxHelper);
+let colourMode = 'gray', show = 'surface', lastCloud = null, lastMesh = null;
 
 function parseCloud(buf) {
   const n = new DataView(buf).getUint32(0, true);
   return { n, pos: new Float32Array(buf, 4, n * 3), gray: new Uint8Array(buf, 4 + n * 12, n) };
 }
 
-function applyCloud(c) {
-  lastCloud = c;
-  const { n, pos, gray } = c;
+function parseMesh(buf) {
+  const dv = new DataView(buf), n = dv.getUint32(0, true), m = dv.getUint32(4, true);
+  return { n, pos: new Float32Array(buf, 8, n * 3), index: new Uint32Array(buf, 8 + n * 12, m * 3), gray: new Uint8Array(buf, 8 + n * 12 + m * 12, n) };
+}
+
+// Gray on a lit surface: lifted, so dark parts still show their shape.
+function colours({ n, pos, gray }, lift = 0) {
   const col = new Float32Array(n * 3);
   if (colourMode === 'gray') {
-    for (let i = 0; i < n; i++) { const g = gray[i] / 255; col[3 * i] = col[3 * i + 1] = col[3 * i + 2] = g; }
+    for (let i = 0; i < n; i++) { const g = lift + (1 - lift) * gray[i] / 255; col[3 * i] = col[3 * i + 1] = col[3 * i + 2] = g; }
   } else {
     let lo = Infinity, hi = -Infinity;
     for (let i = 0; i < n; i++) { const y = pos[3 * i + 1]; if (y < lo) lo = y; if (y > hi) hi = y; }
@@ -121,9 +185,23 @@ function applyCloud(c) {
       col[3 * i] = c.r; col[3 * i + 1] = c.g; col[3 * i + 2] = c.b;
     }
   }
-  geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geom.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return col;
+}
+
+function applyCloud(c) {
+  lastCloud = c;
+  geom.setAttribute('position', new THREE.BufferAttribute(c.pos, 3));
+  geom.setAttribute('color', new THREE.BufferAttribute(colours(c), 3));
   geom.computeBoundingSphere();
+}
+
+function applyMesh(m) {
+  lastMesh = m;
+  meshGeom.setIndex(new THREE.BufferAttribute(m.index, 1));
+  meshGeom.setAttribute('position', new THREE.BufferAttribute(m.pos, 3));
+  meshGeom.setAttribute('color', new THREE.BufferAttribute(colours(m, 0.35), 3));
+  meshGeom.computeVertexNormals();
+  meshGeom.computeBoundingSphere();
 }
 
 // ---- glasses: the rectified left camera's frustum (OpenCV axes: z forward, y down) ----
@@ -170,7 +248,7 @@ function setPose(m) {
 }
 
 // ---- polling ----
-let version = -1, cloudBusy = false, lastCloudAt = 0;
+let version = -1, cloudBusy = false, lastCloudAt = 0, boxKey = '';
 async function poll() {
   try {
     const s = await (await fetch('/state')).json();
@@ -181,6 +259,21 @@ async function poll() {
     $('fps').textContent = `${s.fps} 帧/秒 · ${s.ms ?? '—'} ms/帧`;
     $('points').textContent = s.points.toLocaleString();
     $('voxels').textContent = s.voxels.toLocaleString();
+    const sf = s.surface;
+    $('surface').textContent = `${sf.blocks.toLocaleString()} 块 · 格子 ${(sf.voxel * 1000).toFixed(0)} mm · ${s.surface_ms ?? '—'} ms/帧${sf.box ? ' · 只扫框内' : ''}`;
+    $('object').classList.toggle('on', !!sf.box);
+    $('object').textContent = sf.box ? '回到整个房间' : '框住眼前的物体';
+    if (JSON.stringify(sf.box) !== boxKey) {
+      boxKey = JSON.stringify(sf.box);
+      boxHelper.visible = !!sf.box;
+      if (sf.box) {
+        boxHelper.box.min.fromArray(sf.box[0]); boxHelper.box.max.fromArray(sf.box[1]);
+        // Orbit around the object instead of following the glasses.
+        follow = false; $('follow').classList.remove('on');
+        const c = boxHelper.box.getCenter(new THREE.Vector3());
+        camera.position.add(c.clone().sub(controls.target)); controls.target.copy(c);
+      }
+    }
     $('frames').textContent = `${s.integrated} / ${s.skipped}`;
     $('stereo').textContent = `基线 ${(s.baseline * 100).toFixed(1)} cm · 焦距 ${s.focal.toFixed(0)} px`;
     const c = s.calib ?? {};
@@ -197,7 +290,8 @@ async function poll() {
     $('pause').classList.toggle('on', s.paused);
     $('pause').textContent = s.paused ? '继续融合' : '暂停融合';
     setPose(s.pose);
-    if (s.version !== version && !cloudBusy && performance.now() - lastCloudAt > 700) loadCloud(s.version);
+    const v = show === 'surface' ? s.surface_version : s.version;
+    if (v !== version && !cloudBusy && performance.now() - lastCloudAt > (show === 'surface' ? 1000 : 700)) loadCloud(v);
   } catch {
     $('state').className = 'state warn';
     $('state').textContent = '连不上 recon.py';
@@ -207,8 +301,12 @@ async function poll() {
 async function loadCloud(v) {
   cloudBusy = true;
   try {
-    applyCloud(parseCloud(await (await fetch(`/cloud?min=${$('minHits').value}`)).arrayBuffer()));
-    version = v;
+    const s = show;
+    const buf = await (await fetch(`/${s === 'surface' ? 'mesh' : 'cloud'}?min=${$('minHits').value}`)).arrayBuffer();
+    if (s === show) {
+      s === 'surface' ? applyMesh(parseMesh(buf)) : applyCloud(parseCloud(buf));
+      version = v;
+    }
   } catch { /* retry next poll */ }
   lastCloudAt = performance.now();
   cloudBusy = false;
@@ -234,7 +332,30 @@ live.src = '/frame.jpg';
 const post = (path) => fetch(path + `?min=${$('minHits').value}`, { method: 'POST' }).then((r) => r.json());
 $('pause').onclick = () => post('/pause');
 $('reset').onclick = async () => { await post('/reset'); trailN = 0; trailGeom.setDrawRange(0, 0); version = -1; };
-$('save').onclick = async () => { const r = await post('/save'); $('state').textContent = `已保存 ${r.points.toLocaleString()} 个点 → ${r.path}`; };
+$('save').onclick = async () => {
+  const r = await post('/save');
+  $('state').textContent = `已保存 ${r.points.toLocaleString()} 个点（.ply）和 ${r.triangles.toLocaleString()} 个三角形（-mesh.ply）→ ${r.path}`;
+};
+$('object').onclick = async () => {
+  const on = $('object').classList.contains('on');
+  const r = await fetch(on ? '/object?off=1' : `/object?size=${$('boxSize').value / 100}`, { method: 'POST' }).then((r) => r.json());
+  if (r.error) $('state').textContent = '视野中间没有深度：对准物体（0.3–2.5 米内）再试';
+  version = -1;
+};
+$('boxSize').oninput = () => { $('boxSizeVal').textContent = `${$('boxSize').value} cm`; };
+for (const b of document.querySelectorAll('[data-show]')) {
+  b.onclick = () => {
+    show = b.dataset.show;
+    for (const x of document.querySelectorAll('[data-show]')) x.classList.toggle('on', x === b);
+    surface.visible = show === 'surface';
+    cloud.visible = show === 'cloud';
+    for (const o of live3d) o.visible = show !== 'model';
+    if (model) model.visible = show === 'model';
+    if (show === 'model') frameModel();
+    $('pointRow').hidden = show !== 'cloud';
+    version = -1;
+  };
+}
 $('recalibrate').onclick = async () => {
   if (!confirm('重新标定会清空当前地图，继续吗？')) return;
   await fetch('/recalibrate', { method: 'POST' });
@@ -246,10 +367,134 @@ for (const b of document.querySelectorAll('[data-colour]')) {
     colourMode = b.dataset.colour;
     for (const x of document.querySelectorAll('[data-colour]')) x.classList.toggle('on', x === b);
     if (lastCloud) applyCloud(lastCloud);
+    if (lastMesh) applyMesh(lastMesh);
   };
 }
 $('minHits').oninput = () => { $('minHitsVal').textContent = $('minHits').value; version = -1; };
 $('pointSize').oninput = () => { material.size = $('pointSize').value / 1000; $('pointSizeVal').textContent = `${($('pointSize').value / 10).toFixed(1)} cm`; };
+
+// ---- recording and Object Capture ----
+const live3d = [glasses, grid, boxHelper];
+let model = null, modelName = null, captures = [], recording = false, rgbSeen = false;
+async function capturePoll() {
+  try {
+    const s = await (await fetch('/capture-state')).json();
+    recording = s.recording;
+    $('record').textContent = recording ? '停止录制' : '开始录制';
+    $('record').classList.toggle('rec', recording);
+    $('recInfo').textContent = recording
+      ? `已拍 ${s.frames} 张 · 摄像头 ${s.rgb_fps.toFixed(0)} 帧/秒`
+      : s.message || '';
+    $('rgb').hidden = !recording;
+    const rgbBad = recording && browserStream === null && (s.rgb === 'error' || s.rgb === 'unsupported' || (s.rgb_fps === 0 && rgbWaited()));
+    $('rgbProblem').hidden = !rgbBad;
+    if (rgbBad) $('rgbMsg').textContent = s.rgb === 'error' ? `RGB 摄像头打不开：${s.rgb_message ?? ''}` : s.rgb === 'unsupported' ? 'SDK 没有提供 RGB 摄像头' : '还没收到 RGB 画面';
+    // capture list (newest first); keep the selection
+    const key = JSON.stringify(s.captures);
+    if (key !== JSON.stringify(captures)) {
+      const sel = $('captureList').value;
+      captures = s.captures;
+      $('captureList').innerHTML = captures.length
+        ? captures.map((c) => `<option value="${c.name}">${c.name.slice(8).replace(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/, '$2-$3 $4:$5')} · ${c.images} 张${c.usdz ? ` · 有模型${c.detail ? `（${DETAILS[c.detail] ?? c.detail}）` : ''}` : ''}</option>`).join('')
+        : '<option value="">还没有录制</option>';
+      if (captures.some((c) => c.name === sel)) $('captureList').value = sel;
+    }
+    const b = s.build, running = b && !b.done && !b.error;
+    $('buildBox').hidden = !b;
+    if (b) {
+      $('buildBar').style.width = `${(b.progress * 100).toFixed(1)}%`;
+      const eta = b.eta != null && running ? ` · 还要约 ${Math.max(1, Math.round(b.eta / 60))} 分钟` : '';
+      $('buildInfo').textContent = b.error ? `失败：${b.error}` : b.done ? `完成，用时 ${b.elapsed} 秒` : `${STAGES[b.stage] ?? b.stage} ${(b.progress * 100).toFixed(0)}%${eta}`;
+      $('buildInfo').style.color = b.error ? 'var(--warn)' : '';
+      $('buildCancel').hidden = !running;
+    }
+    const cur = captures.find((c) => c.name === $('captureList').value);
+    $('build').disabled = !cur || running || recording || cur.images < 10;
+    $('modelBtns').hidden = !cur?.usdz;
+    $('viewModel').disabled = !cur?.obj;
+  } catch { /* the main poll reports connection problems */ }
+  setTimeout(capturePoll, 500);
+}
+const DETAILS = { preview: '预览', reduced: '较低', medium: '中等', full: '完整', raw: '原始' };
+const STAGES = { '准备': '准备', '编译工具': '第一次用：编译工具', '开始': '开始', starting: '开始', preprocessing: '预处理照片', 'aligning images': '对齐照片', 'point cloud': '生成点云', mesh: '生成网格', texturing: '贴图', optimizing: '优化', saved: '保存', working: '处理中' };
+let recStarted = 0;
+const rgbWaited = () => performance.now() - recStarted > 4000;
+$('record').onclick = async () => {
+  if (!recording) recStarted = performance.now();
+  else stopBrowserCam();
+  await fetch(`/record?on=${recording ? 0 : 1}`, { method: 'POST' });
+};
+$('rgb').onload = $('rgb').onerror = () => setTimeout(() => ($('rgb').src = `/rgb.jpg?t=${Date.now()}`), recording ? 250 : 1000);
+$('rgb').src = '/rgb.jpg';
+
+// The SDK could not open the RGB camera: open it in the browser (a plain UVC
+// webcam) and send its frames to recon.py instead.
+let browserStream = null, browserTimer = 0;
+$('browserCam').onclick = async () => {
+  try {
+    const open = (deviceId) => navigator.mediaDevices.getUserMedia({ video: deviceId ? { deviceId: { exact: deviceId }, width: { ideal: 1920 }, height: { ideal: 1080 } } : true });
+    let list = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+    if (list.some((d) => !d.label)) { (await open()).getTracks().forEach((t) => t.stop()); list = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput'); }
+    const cam = list.find((d) => /0c45:636b|viture|usb camera/i.test(d.label));
+    if (!cam) { $('rgbMsg').textContent = `浏览器里没找到眼镜摄像头（看到的：${list.map((d) => d.label).join('、') || '无'}）`; return; }
+    const v = $('camVideo');
+    browserStream = v.srcObject = await open(cam.deviceId);
+    await v.play();
+    const canvas = document.createElement('canvas');
+    let busy = false;
+    browserTimer = setInterval(() => {
+      if (busy || !v.videoWidth) return;
+      busy = true;
+      canvas.width = v.videoWidth; canvas.height = v.videoHeight;
+      canvas.getContext('2d').drawImage(v, 0, 0);
+      const t = Date.now();
+      canvas.toBlob((b) => fetch('/rgb-frame', { method: 'POST', body: b, headers: { 'x-time': String(t) } }).finally(() => (busy = false)), 'image/jpeg', 0.92);
+    }, 66);
+  } catch (err) {
+    $('rgbMsg').textContent = `浏览器打开摄像头失败：${err.message}`;
+  }
+};
+function stopBrowserCam() {
+  clearInterval(browserTimer);
+  browserStream?.getTracks().forEach((t) => t.stop());
+  browserStream = null;
+}
+
+$('build').onclick = async () => {
+  const r = await fetch(`/build?name=${$('captureList').value}&detail=${$('detail').value}`, { method: 'POST' }).then((r) => r.json());
+  if (r.error) $('buildInfo').textContent = r.error;
+};
+$('buildCancel').onclick = () => fetch('/build-cancel', { method: 'POST' });
+$('openUsdz').onclick = () => fetch(`/open?name=${$('captureList').value}&what=usdz`, { method: 'POST' });
+$('openFolder').onclick = () => fetch(`/open?name=${$('captureList').value}`, { method: 'POST' });
+$('viewModel').onclick = async () => {
+  const c = captures.find((x) => x.name === $('captureList').value);
+  if (!c?.obj) return;
+  // Keyed by build time too: building again replaces the model under the same name.
+  if (modelName !== `${c.name}@${c.built}`) {
+    $('viewModel').textContent = '载入中…';
+    const base = `/captures/${c.name}/model/obj/`;
+    const mtl = await new MTLLoader().setPath(base).loadAsync(c.obj.replace(/\.obj$/, '.mtl'));
+    mtl.preload();
+    const obj = await new OBJLoader().setMaterials(mtl).setPath(base).loadAsync(c.obj);
+    if (model) { scene.remove(model); model.traverse((o) => { o.geometry?.dispose(); o.material?.dispose?.(); }); }
+    model = obj; modelName = `${c.name}@${c.built}`;
+    scene.add(model);
+    $('viewModel').textContent = '在这里查看';
+  }
+  $('showModelTab').hidden = false;
+  $('showModelTab').click();
+};
+// Object Capture's model is in its own frame (y up, metres, roughly centred): show it on its own.
+function frameModel() {
+  if (!model) return;
+  follow = false; $('follow').classList.remove('on');
+  const box = new THREE.Box3().setFromObject(model), c = box.getCenter(new THREE.Vector3());
+  const r = box.getSize(new THREE.Vector3()).length() / 2;
+  controls.target.copy(c);
+  camera.position.copy(c).add(new THREE.Vector3(r * 1.2, r * 0.9, r * 1.8));
+}
+capturePoll();
 
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
