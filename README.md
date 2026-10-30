@@ -310,33 +310,46 @@ When you hover over either eye, the page draws a matching horizontal line across
 2. The depth map is moved into the world with the pose the SDK reported for that frame.
 3. The points are averaged into a 2 cm voxel map, which a three.js page draws as a point cloud next to the glasses' path.
 
-It needs Python 3 with numpy and OpenCV 4 (`pip install -r tools/recon/requirements.txt`; OpenCV 5.0's fisheye calibration is broken in Python). Quit Viture Open Walker first, then:
+**One click:** quit Viture Open Walker, then double-click `Scan.command` in Finder, or run `npm run scan`. The launcher (`tools/scan.mjs`):
 
-```bash
-npm run cameras                              # terminal 1: the camera stream (port 8787)
-npm run calibrate -- --square-mm 28.5        # terminal 2: once, writes tools/recon/calib.json
-npm run recon                                # then: http://localhost:8788
-```
+1. builds the helper if needed;
+2. creates `tools/recon/.venv` with numpy and OpenCV 4 the first time (it needs `python3`, which macOS offers to install);
+3. starts the camera stream (port 8787) and the reconstruction page (port 8788), and opens the page in your browser.
 
-**Calibration (once per pair of glasses).** The SDK doesn't publish the camera calibration, so `calibrate.py` measures it with a checkerboard:
+Ctrl-C in its terminal stops everything. Arguments after `--` go to `recon.py`; `python3 tools/recon/recon.py --help` lists them.
 
-1. Open `http://localhost:8787/checkerboard` full screen and measure one square with a ruler. That number is `--square-mm`.
-2. Look at the board with the glasses from many directions. Get near and far, tilt your head, and put the board in every part of the view. A view is captured on its own when both eyes see the board and you hold still. Space captures a view by hand, c solves early, and q quits.
+**First run: calibration.** The SDK doesn't publish the camera calibration, so the page calibrates the cameras first. It only needs doing once per pair of glasses:
 
-`calibrate.py` solves for each eye's fisheye intrinsics, the stereo extrinsics, and the hand-eye transform from the left camera to the tracked pose. It prints the error: RMS under about 0.5 px and `hand_eye_spread` under about 1 cm are good.
+1. Click 开始. The screen shows a checkerboard full screen.
+2. Look at the checkerboard from many angles: tilt your head, move closer and further, and put the board in every part of the view. A view is captured when both eyes see the board and you hold still for about half a second; the border flashes green.
+3. After 25 views it solves on its own, or press 现在计算 once you have 12 or more.
+
+The calibration solves for:
+
+- each eye's fisheye intrinsics;
+- the stereo extrinsics;
+- the hand-eye transform from the left camera to the tracked pose;
+- the board's size. The SDK's head positions are in metres, so there's nothing to measure.
+
+The result goes to `tools/recon/calib.json`. If the error is too large, the page asks for more views. Later runs go straight to reconstruction, and the 重新标定 button calibrates again.
 
 **Scanning.** Move slowly. Frames are skipped while your head turns faster than 60°/s or while the SDK's pose is unstable. On the page you can:
 
 - pause fusion, or clear the map;
 - save the map as a PLY file to `tools/recon/scans/`, which opens in MeshLab or Blender;
-- choose how many frames must see a voxel before it shows (fewer means denser, more means cleaner);
+- choose how many frames must see a voxel before it shows;
 - colour the points by gray value or by height.
 
 The page also shows the rectified left eye and its disparity map.
 
-**What to expect.** The tested numbers come from a simulated 9 cm fisheye rig. Depth is best from 0.3 to 2 m. Single-frame median error was about 1–2 cm, and the fused map's median error was about 1.2 cm with min-hits 3. Blank walls, glass and dark areas give no depth. Stereo matching uses only the middle of the fisheye view (`--fov-scale 0.75`) with a left-right consistency check, because the outer edges are where calibration is weakest. Other options are in `python3 tools/recon/recon.py --help`.
+**What to expect.** These are tested numbers from a simulated 9 cm fisheye rig:
 
-The pose sent with a frame is the newest one when the frame arrives, not the exact pose at exposure, so fast motion smears the map. The SDK's per-frame pose callback might fix this.
+- Calibration recovered the baseline and the board size to about 0.1%, and the camera-to-pose transform to about 1 mm.
+- Depth is best from 0.3 to 2 m. Single-frame median error was about 1–2 cm, and the fused map's median error was about 1.2 cm.
+
+Blank walls, glass and dark areas give no depth. Stereo matching uses only the middle of the fisheye view (`--fov-scale 0.75`) with a left-right consistency check, because the outer edges are where calibration is weakest.
+
+The pose sent with a frame is the newest one when the frame arrives, not the exact pose at exposure, so fast motion smears the map.
 
 ## Architecture notes
 
