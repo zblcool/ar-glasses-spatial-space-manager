@@ -28,6 +28,7 @@ import cv2
 import numpy as np
 
 from calibrate import Calibrator
+import screens
 from core import Calibration, FrameStream, StereoDepth, StereoFrame, VoxelMap, rotation_angle
 
 HERE = Path(__file__).resolve().parent
@@ -93,7 +94,9 @@ class App:
         self.stream, self.args = stream, args
         self.recon: Recon | None = None
         self.calibrator: Calibrator | None = None
+        self.calib_stats: dict = {}
         if args.calib.exists():
+            self.calib_stats = json.loads(args.calib.read_text()).get("stats", {})
             self.start_recon(Calibration.load(args.calib))
         else:
             self.calibrate()
@@ -104,7 +107,12 @@ class App:
         return "recon" if self.recon else "calibrate"
 
     def calibrate(self) -> None:
-        self.calibrator = Calibrator(square=self.args.square_mm / 1000 if self.args.square_mm else None)
+        if self.args.square_mm:
+            method, square = "manual", self.args.square_mm / 1000
+        else:
+            # The page sends the screen-based size (POST /calib-config) once it has drawn the board.
+            method, square = ("screen" if any(d["mm"][0] > 0 for d in screens.displays()) else "auto"), None
+        self.calibrator = Calibrator(method=method, square=square)
         self.recon = None
 
     def start_recon(self, calib: Calibration) -> None:
@@ -127,7 +135,8 @@ class App:
                 if cal.result:
                     calib, stats = cal.result
                     calib.save(self.args.calib, {"stats": stats})
-                    print("calibrated:", ", ".join(f"{k} {v:.4g}" for k, v in stats.items()))
+                    self.calib_stats = stats
+                    print("calibrated:", ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}" for k, v in stats.items()))
                     self.start_recon(calib)
                     self.calibrator = None
 
@@ -178,6 +187,8 @@ def make_handler(app: App, scans: Path):
             elif url.path == "/calib-state":
                 body = {"mode": app.mode, "stream": app.stream_problem(), **(cal.state() if cal else {})}
                 self.send(200, json.dumps(body).encode())
+            elif url.path == "/screens":
+                self.send(200, json.dumps(screens.displays()).encode())
             elif url.path == "/calib-preview.jpg":
                 self.send(200, cal.preview if cal else b"", "image/jpeg")
             elif url.path == "/state":
@@ -185,7 +196,7 @@ def make_handler(app: App, scans: Path):
                     self.send(200, json.dumps({"mode": app.mode}).encode())
                     return
                 body = {**recon.stats, "mode": app.mode, "pose": recon.pose, "voxels": int(len(recon.map.hits)),
-                        "version": recon.map.version, "paused": recon.paused,
+                        "version": recon.map.version, "paused": recon.paused, "calib": app.calib_stats,
                         "baseline": recon.depth.baseline, "focal": recon.depth.focal}
                 self.send(200, json.dumps(body).encode())
             elif url.path == "/frame.jpg":
@@ -203,6 +214,14 @@ def make_handler(app: App, scans: Path):
             if url.path == "/recalibrate":
                 app.calibrate()
                 self.send(200, b"{}")
+            elif url.path == "/calib-config" and app.calibrator:
+                try:
+                    body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}")
+                    mm = body.get("square_mm")
+                    app.calibrator.configure(body.get("method", ""), float(mm) / 1000 if mm else None)
+                    self.send(200, json.dumps(app.calibrator.state() | {"ok": True}).encode())
+                except (ValueError, TypeError) as err:
+                    self.send(400, json.dumps({"error": str(err)}).encode())
             elif url.path == "/calib-solve" and app.calibrator:
                 self.send(200, json.dumps({"started": app.calibrator.solve_now()}).encode())
             elif not recon:
@@ -229,7 +248,7 @@ def main() -> None:
     ap.add_argument("--calib", type=Path, default=HERE / "calib.json")
     ap.add_argument("--port", type=int, default=8788, help="this page's port (default 8788)")
     ap.add_argument("--viewer-port", type=int, default=8787, help="camera viewer port")
-    ap.add_argument("--square-mm", type=float, help="board square size if you measured it (otherwise it is solved for)")
+    ap.add_argument("--square-mm", type=float, help="board square size if you measured it (otherwise the page sizes it from the screen, or solves for it)")
     ap.add_argument("--voxel", type=float, default=0.02, help="voxel size in metres (default 0.02)")
     ap.add_argument("--near", type=float, default=0.25)
     ap.add_argument("--far", type=float, default=2.5, help="ignore depth beyond this (metres); it gets noisy fast")

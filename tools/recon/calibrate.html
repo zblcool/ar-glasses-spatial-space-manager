@@ -6,31 +6,43 @@
 <title>Camera Calibration</title>
 <style>
   /* Everything around the board stays light: dark shapes next to it confuse the corner detector. */
-  :root { --muted: #8a8f98; --ok: #1f9d55; --warn: #c27c0e; --bad: #c0392b; }
+  :root { --muted: #8a8f98; --ok: #1f9d55; --warn: #c27c0e; --bad: #c0392b; --accent: #2f80ed; }
   html, body { margin: 0; height: 100%; background: #fff; color: #333; font: 14px/1.45 -apple-system, "PingFang SC", system-ui, sans-serif; overflow: hidden; }
   body { display: flex; align-items: center; justify-content: center; }
-  svg { height: min(78vh, 50vw); width: auto; transition: outline-color .2s; outline: 10px solid transparent; outline-offset: 0; }
+  svg { height: min(86vh, calc((100vw - 400px) * 0.75)); width: auto; flex: none; transition: outline-color .2s; outline: 10px solid transparent; }
   svg.flash { outline-color: #9be7b8; }
   .card { position: fixed; background: #f6f7f9; border-radius: 10px; padding: 10px 14px; color: #444; }
-  #status { top: 12px; left: 12px; max-width: min(360px, 40vw); }
-  #msg { font-size: 20px; font-weight: 600; color: #222; }
+  #status { top: 12px; left: 12px; width: 176px; }
+  #msg { font-size: 16px; font-weight: 600; color: #222; }
   #msg.ok { color: var(--ok); } #msg.warn { color: var(--warn); } #msg.bad { color: var(--bad); }
   .bar { height: 6px; background: #e3e6ea; border-radius: 3px; margin: 8px 0 4px; overflow: hidden; }
   .bar i { display: block; height: 100%; width: 0; background: #7cc4ff; transition: width .3s; }
-  #count { color: var(--muted); font-size: 12px; }
+  #count, #sizeLine { color: var(--muted); font-size: 12px; }
+  #sizeLine { margin-top: 4px; }
+  #sizeLine button, #solve { font: inherit; font-size: 12px; padding: 2px 8px; border-radius: 6px; border: 1px solid #cfd5dc; background: #fff; cursor: pointer; margin-left: 4px; }
+  #solve { font-size: 13px; padding: 5px 12px; margin: 8px 0 0; }
   #err { color: var(--bad); font-size: 12px; margin-top: 6px; }
-  #solve { margin-top: 8px; font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 8px; border: 1px solid #cfd5dc; background: #fff; cursor: pointer; }
-  #tips { bottom: 12px; left: 12px; max-width: min(360px, 40vw); font-size: 12px; color: #666; }
+  #tips { bottom: 12px; left: 12px; width: 176px; font-size: 12px; color: #666; }
   #tips ol { margin: 4px 0 0; padding-left: 18px; }
   #side { position: fixed; top: 12px; right: 12px; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
-  #preview { width: min(320px, 24vw); border-radius: 6px; opacity: .85; display: block; }
-  #cover { width: min(160px, 14vw); aspect-ratio: 4 / 3; background: #eef0f3; border-radius: 6px; position: relative; }
+  #preview { width: 180px; border-radius: 6px; opacity: .85; display: block; }
+  #cover { width: 120px; aspect-ratio: 4 / 3; background: #eef0f3; border-radius: 6px; position: relative; }
   #cover b { position: absolute; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: #7cc4ff; }
   .label { font-size: 11px; color: var(--muted); text-align: right; }
-  #start { position: fixed; inset: 0; background: rgba(255,255,255,.94); display: flex; flex-direction: column; gap: 14px; align-items: center; justify-content: center; text-align: center; cursor: pointer; }
-  #start h1 { margin: 0; font-size: 26px; }
-  #start p { margin: 0; color: #555; max-width: 520px; padding: 0 16px; }
-  #start button { font: inherit; font-size: 16px; padding: 10px 22px; border-radius: 10px; border: 0; background: #2f80ed; color: #fff; cursor: pointer; }
+
+  #setup { position: fixed; inset: 0; background: rgba(255,255,255,.96); display: flex; align-items: center; justify-content: center; padding: 16px; }
+  #setup .panel { width: min(560px, 100%); display: flex; flex-direction: column; gap: 12px; }
+  #setup h1 { margin: 0; font-size: 24px; }
+  #setup p { margin: 0; color: #555; }
+  .opt { display: flex; gap: 10px; align-items: flex-start; border: 1px solid #dfe3e8; border-radius: 10px; padding: 10px 12px; cursor: pointer; background: #fff; }
+  .opt:has(input:checked) { border-color: var(--accent); background: #f3f8ff; }
+  .opt input[type=radio] { margin-top: 4px; }
+  .opt b { display: block; color: #222; }
+  .opt small { color: #666; display: block; }
+  .opt .detail { color: var(--accent); font-size: 12px; margin-top: 2px; }
+  .opt.disabled { opacity: .5; cursor: default; }
+  .opt input[type=number] { width: 90px; font: inherit; padding: 2px 6px; border: 1px solid #cfd5dc; border-radius: 6px; }
+  #go { align-self: flex-start; font: inherit; font-size: 16px; padding: 10px 22px; border-radius: 10px; border: 0; background: var(--accent); color: #fff; cursor: pointer; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -42,6 +54,7 @@
   <div id="msg">连接中…</div>
   <div class="bar"><i id="bar"></i></div>
   <div id="count"></div>
+  <div id="sizeLine"></div>
   <div id="err" hidden></div>
   <button id="solve" hidden>现在计算</button>
 </div>
@@ -60,24 +73,115 @@
     <li>让棋盘格出现在视野的各个位置（右上小图会标出来）。</li>
   </ol>
 </div>
-<div id="start">
-  <h1>摄像头标定</h1>
-  <p>屏幕会全屏显示一个棋盘格。戴着眼镜从不同角度看它，大约 25 个角度、一两分钟就好。不用量尺寸。</p>
-  <button>开始</button>
+
+<div id="setup">
+  <div class="panel">
+    <h1>摄像头标定</h1>
+    <p>屏幕会全屏显示一个棋盘格，你戴着眼镜从不同角度看它，大约 25 个角度、一两分钟。先选怎么确定格子的真实大小：</p>
+    <label class="opt" id="optScreen">
+      <input type="radio" name="method" value="screen">
+      <span><b>按屏幕尺寸自动算（推荐）</b>
+        <small>读取这台 Mac 屏幕的物理尺寸，直接算出每格多少毫米。棋盘格要显示在 Mac 自己的屏幕上，浏览器缩放保持 100%。</small>
+        <span class="detail" id="screenDetail">正在读取屏幕信息…</span></span>
+    </label>
+    <label class="opt">
+      <input type="radio" name="method" value="manual">
+      <span><b>我用尺子量</b>
+        <small>开始后量一个黑格子的边长，随时填进左上角。</small>
+        <span class="detail">边长 <input type="number" id="manualMm" min="5" max="200" step="0.1" placeholder="毫米"> mm（可以稍后再填）</span></span>
+    </label>
+    <label class="opt">
+      <input type="radio" name="method" value="auto">
+      <span><b>用眼镜的空间定位推算</b>
+        <small>不需要任何尺寸信息，靠眼镜自己的定位（以米为单位）推算。需要头前后移动，不只是转动；精度取决于定位。</small></span>
+    </label>
+    <button id="go">开始</button>
+  </div>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
+const board = $('board');
 let html = '<rect x="-1" y="-1" width="12" height="9" fill="#fff"/>';
 for (let y = 0; y < 7; y++) for (let x = 0; x < 10; x++) if ((x + y) % 2 === 0) html += `<rect x="${x}" y="${y}" width="1" height="1" fill="#000"/>`;
-$('board').innerHTML = html;
+board.innerHTML = html;
 
-$('start').onclick = () => {
-  document.documentElement.requestFullscreen?.().catch(() => {});
-  $('start').hidden = true;
+let displays = [];
+let squarePx = 0;  // board square in CSS px, fixed once calibration starts
+const METHOD_NAMES = { screen: '按屏幕尺寸', manual: '尺子量', auto: '定位推算' };
+
+/** The display showing this window: the one containing the window's centre (desktop points). */
+function currentDisplay() {
+  const cx = window.screenX + window.outerWidth / 2, cy = window.screenY + window.outerHeight / 2;
+  const usable = displays.filter((d) => d.mm[0] > 0);
+  return usable.find((d) => cx >= d.points[0] && cx < d.points[0] + d.points[2] && cy >= d.points[1] && cy < d.points[1] + d.points[3])
+    ?? usable.find((d) => d.builtin) ?? usable[0];
+}
+
+/**
+ * Square size in mm from the display: a CSS px at 100% zoom is one point;
+ * browser zoom = devicePixelRatio / the display's pixels-per-point.
+ */
+function screenSquareMm(px) {
+  const d = currentDisplay();
+  if (!d) return null;
+  const mmPerPoint = d.mm[0] / d.points[2];
+  const zoom = devicePixelRatio / (d.scale || 1);
+  return { mm: px * zoom * mmPerPoint, d, zoom };
+}
+
+function describe(d) {
+  return `${d.builtin ? '内建显示器' : '外接显示器'} ${d.mm[0].toFixed(1)} × ${d.mm[1].toFixed(1)} mm，${Math.round(d.points[2])} × ${Math.round(d.points[3])} 点`;
+}
+
+function plannedSquarePx() {
+  // What the board will measure after going full screen (screen size, not the window's).
+  return Math.floor(Math.min((screen.height * 0.86) / 9, (screen.width - 400) / 12));
+}
+
+async function loadScreens() {
+  try { displays = await (await fetch('/screens')).json(); } catch { displays = []; }
+  const r = screenSquareMm(plannedSquarePx());
+  const radio = document.querySelector('input[value=screen]');
+  if (r) {
+    $('screenDetail').textContent = `检测到 ${describe(r.d)} → 每格约 ${r.mm.toFixed(2)} mm` + (Math.abs(r.zoom - 1) > 0.01 ? `（浏览器缩放 ${Math.round(r.zoom * 100)}%，已计入）` : '');
+    radio.checked = true;
+  } else {
+    $('screenDetail').textContent = '读不到屏幕尺寸（不是 macOS，或显示器没提供尺寸），请选另外两种。';
+    $('optScreen').classList.add('disabled');
+    radio.disabled = true;
+    document.querySelector('input[value=auto]').checked = true;
+  }
+}
+
+function method() { return document.querySelector('input[name=method]:checked')?.value ?? 'auto'; }
+
+async function sendConfig() {
+  const m = method();
+  let mm = null, note = '';
+  if (m === 'screen') {
+    const r = screenSquareMm(squarePx);
+    if (r) { mm = r.mm; note = describe(r.d); }
+  } else if (m === 'manual') {
+    mm = Number($('manualMm').value) || null;
+  }
+  await fetch('/calib-config', { method: 'POST', body: JSON.stringify({ method: m, square_mm: mm }) });
+  $('sizeLine').dataset.note = note;
+}
+
+$('go').onclick = async () => {
+  $('setup').hidden = true;
+  if (!squarePx) {
+    try { await document.documentElement.requestFullscreen?.(); } catch { /* not allowed: stay windowed */ }
+    await new Promise((r) => setTimeout(r, 500));
+    // Fix the board's size now: its physical size must not change between views.
+    squarePx = Math.floor(Math.min((innerHeight * 0.86) / 9, (innerWidth - 400) / 12));
+    board.style.height = `${squarePx * 9}px`;
+    board.style.width = `${squarePx * 12}px`;
+  }
+  await sendConfig();
 };
-
-$('solve').onclick = () => fetch('/calib-solve', { method: 'POST' });
+$('manualMm').oninput = () => { document.querySelector('input[value=manual]').checked = true; };
 
 let lastCapture = 0;
 async function poll() {
@@ -90,17 +194,23 @@ async function poll() {
       setTimeout(() => (location.href = '/'), 1200);
       return;
     }
-    const msg = s.stream ?? s.message;
-    $('msg').textContent = msg;
+    $('msg').textContent = s.stream ?? s.message;
     $('msg').className = s.stream ? 'bad' : s.board ? 'ok' : s.solving ? 'warn' : '';
     $('bar').style.width = `${Math.min(100, (100 * s.views) / s.target)}%`;
     $('count').textContent = s.solving ? '正在计算，十几秒…' : `已拍 ${s.views} / ${s.target}`;
+    const size = s.method === 'auto' ? '格子大小：用定位推算' : s.square_mm ? `格子边长 ${s.square_mm.toFixed(2)} mm（${METHOD_NAMES[s.method]}）` : '格子边长：还没填';
+    if ($('sizeLine').dataset.shown !== size) {
+      $('sizeLine').dataset.shown = size;
+      $('sizeLine').innerHTML = '';
+      $('sizeLine').append(size, Object.assign(document.createElement('button'), { textContent: '更改', onclick: () => { $('go').textContent = '确定'; $('setup').hidden = false; } }));
+      if ($('sizeLine').dataset.note) $('sizeLine').title = $('sizeLine').dataset.note;
+    }
     $('solve').hidden = s.solving || s.views < 12;
     $('err').hidden = !s.error;
     $('err').textContent = s.error ?? '';
     $('cover').innerHTML = (s.coverage ?? []).map(([x, y]) => `<b style="left:${x * 100}%;top:${y * 100}%"></b>`).join('');
     if (s.captured_at && s.captured_at !== lastCapture) {
-      if (lastCapture) { $('board').classList.add('flash'); setTimeout(() => $('board').classList.remove('flash'), 350); }
+      if (lastCapture) { board.classList.add('flash'); setTimeout(() => board.classList.remove('flash'), 350); }
       lastCapture = s.captured_at;
     }
   } catch {
@@ -109,9 +219,11 @@ async function poll() {
   }
   setTimeout(poll, 200);
 }
+$('solve').onclick = () => fetch('/calib-solve', { method: 'POST' });
 const preview = $('preview');
 preview.onload = preview.onerror = () => setTimeout(() => (preview.src = `/calib-preview.jpg?${Date.now()}`), 250);
 preview.src = '/calib-preview.jpg';
+loadScreens();
 poll();
 </script>
 </body>

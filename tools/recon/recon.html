@@ -62,6 +62,7 @@
     <dt>地图体素</dt><dd id="voxels">—</dd>
     <dt>已融合 / 跳过</dt><dd id="frames">—</dd>
     <dt>双目</dt><dd id="stereo">—</dd>
+    <dt>标定</dt><dd id="calib">—</dd>
   </dl>
   <p class="hint">慢慢转头、走动，近处（0.3–2.5 米）效果最好。拖动旋转视角，滚轮缩放，右键平移。</p>
 </aside>
@@ -175,6 +176,12 @@ async function poll() {
     $('voxels').textContent = s.voxels.toLocaleString();
     $('frames').textContent = `${s.integrated} / ${s.skipped}`;
     $('stereo').textContent = `基线 ${(s.baseline * 100).toFixed(1)} cm · 焦距 ${s.focal.toFixed(0)} px`;
+    const c = s.calib ?? {};
+    if (c.square_m) {
+      const how = { screen: '按屏幕', manual: '尺子量', auto: '定位推算' }[c.square_method] ?? '';
+      const vio = c.square_method !== 'auto' && c.square_vio_m > 0 ? ` · 定位估算 ${(c.square_vio_m * 1000).toFixed(1)} mm` : '';
+      $('calib').textContent = `格子 ${(c.square_m * 1000).toFixed(2)} mm（${how}）${vio}`;
+    }
     $('pause').classList.toggle('on', s.paused);
     $('pause').textContent = s.paused ? '继续融合' : '暂停融合';
     setPose(s.pose);
