@@ -47,7 +47,8 @@ class Recon:
         self.near, self.far = args.near, args.far
         self.max_turn = np.radians(args.max_turn_dps)
         self.paused = False
-        self.jpeg = b""
+        self.last: tuple | None = None  # (raw left, raw right, rect left, rect right, disparity) of the newest frame
+        self.border = self._border()
         self.pose: list | None = None
         self.stats = {"fps": 0.0, "integrated": 0, "skipped": 0, "points": 0, "state": "starting"}
         self.prev: tuple | None = None  # (t, T_world_dev) of the previous frame
@@ -79,12 +80,43 @@ class Recon:
         self.stats["state"] = "paused" if self.paused else state
         self.stats["points"] = int(len(pts))
 
-        colour = cv2.applyColorMap(np.clip(disp * (255.0 / self.depth.sgbm.getNumDisparities()), 0, 255).astype(np.uint8), cv2.COLORMAP_TURBO)
-        colour[disp <= 0.5] = 0
-        self.jpeg = cv2.imencode(".jpg", np.hstack([cv2.cvtColor(rl, cv2.COLOR_GRAY2BGR), colour]), [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes()
+        self.last = (f.left, f.right, rl, rr, disp)
         self.times = [t for t in self.times if t > t0 - 2] + [t0]
         self.stats["fps"] = round(len(self.times) / 2, 1)
         self.stats["ms"] = round((time.time() - t0) * 1000)
+
+
+    def _border(self) -> tuple[np.ndarray, np.ndarray]:
+        """Outline of the rectified view in each raw image (from the remap tables)."""
+        out = []
+        for m in (self.depth.map_l[0], self.depth.map_r[0]):
+            h, w = m.shape[:2]
+            edge = np.concatenate([m[0, :], m[:, -1], m[-1, ::-1], m[::-1, 0]])
+            out.append(edge.reshape(-1, 1, 2).astype(np.int32))
+        return out[0], out[1]
+
+    def jpeg(self, view: str) -> bytes:
+        """depth: rectified left + disparity; rectified: both rectified eyes with
+        rows marked (a point must sit on the same row in both); raw: the fisheye
+        images with the part used for matching outlined."""
+        if not self.last:
+            return b""
+        l, r, rl, rr, disp = self.last
+        bgr = lambda g: cv2.cvtColor(g, cv2.COLOR_GRAY2BGR)
+        if view == "rectified":
+            img = np.hstack([bgr(rl), np.full((rl.shape[0], 4, 3), 255, np.uint8), bgr(rr)])
+            for y in range(12, img.shape[0], 24):
+                cv2.line(img, (0, y), (img.shape[1], y), (80, 200, 255) if (y // 24) % 2 else (255, 160, 60), 1)
+        elif view == "raw":
+            a, b = bgr(l), bgr(r)
+            cv2.polylines(a, [self.border[0]], True, (80, 220, 120), 2)
+            cv2.polylines(b, [self.border[1]], True, (80, 220, 120), 2)
+            img = np.hstack([a, np.full((a.shape[0], 4, 3), 255, np.uint8), b])
+        else:
+            colour = cv2.applyColorMap(np.clip(disp * (255.0 / self.depth.sgbm.getNumDisparities()), 0, 255).astype(np.uint8), cv2.COLORMAP_TURBO)
+            colour[disp <= 0.5] = 0
+            img = np.hstack([bgr(rl), colour])
+        return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes()
 
 
 class App:
@@ -95,8 +127,12 @@ class App:
         self.recon: Recon | None = None
         self.calibrator: Calibrator | None = None
         self.calib_stats: dict = {}
+        self.recon_calib_old = False
         if args.calib.exists():
             self.calib_stats = json.loads(args.calib.read_text()).get("stats", {})
+            # Calibrations from before coverage was recorded: rectification
+            # works, but a new calibration is more accurate.
+            self.recon_calib_old = "theta_max" not in json.loads(args.calib.read_text())
             self.start_recon(Calibration.load(args.calib))
         else:
             self.calibrate()
@@ -136,6 +172,7 @@ class App:
                     calib, stats = cal.result
                     calib.save(self.args.calib, {"stats": stats})
                     self.calib_stats = stats
+                    self.recon_calib_old = False
                     print("calibrated:", ", ".join(f"{k} {v:.4g}" if isinstance(v, float) else f"{k} {v}" for k, v in stats.items()))
                     self.start_recon(calib)
                     self.calibrator = None
@@ -197,10 +234,12 @@ def make_handler(app: App, scans: Path):
                     return
                 body = {**recon.stats, "mode": app.mode, "pose": recon.pose, "voxels": int(len(recon.map.hits)),
                         "version": recon.map.version, "paused": recon.paused, "calib": app.calib_stats,
-                        "baseline": recon.depth.baseline, "focal": recon.depth.focal}
+                        "baseline": recon.depth.baseline, "focal": recon.depth.focal,
+                        "trusted_deg": [round(float(np.degrees(t)), 1) for t in recon.depth.theta],
+                        "rect_size": list(recon.depth.size), "old_calib": app.recon_calib_old}
                 self.send(200, json.dumps(body).encode())
             elif url.path == "/frame.jpg":
-                self.send(200, recon.jpeg if recon else b"", "image/jpeg")
+                self.send(200, recon.jpeg(q.get("view", ["depth"])[0]) if recon else b"", "image/jpeg")
             elif url.path == "/cloud" and recon:
                 pos, gray = recon.map.solid(int(q.get("min", ["3"])[0]))
                 # u32 count, then xyz float32 × count, then gray uint8 × count
@@ -253,7 +292,7 @@ def main() -> None:
     ap.add_argument("--near", type=float, default=0.25)
     ap.add_argument("--far", type=float, default=2.5, help="ignore depth beyond this (metres); it gets noisy fast")
     ap.add_argument("--width", type=int, default=480, help="rectified image width (bigger = finer, slower)")
-    ap.add_argument("--fov-scale", type=float, default=0.75, help="rectified field of view; <1 crops to the middle of the fisheye (default 0.75)")
+    ap.add_argument("--fov-scale", type=float, default=0.85, help="<1 crops the rectified view to the middle of what both eyes see (default 0.85)")
     ap.add_argument("--max-disp", type=int, default=64, help="disparity search range, multiple of 16")
     ap.add_argument("--max-turn-dps", type=float, default=60, help="skip frames while turning faster (deg/s)")
     ap.add_argument("--no-lr-check", action="store_true", help="skip the left-right consistency check (faster, noisier)")

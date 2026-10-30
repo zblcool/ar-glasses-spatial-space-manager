@@ -327,7 +327,7 @@ Ctrl-C in its terminal stops everything. Arguments after `--` go to `recon.py`; 
 
    With the first two, the head-pose estimate is still worked out as a cross-check. If the two differ by more than 15%, calibration stops and says so; the usual cause is browser zoom or the board being on the wrong screen. The 更改 button switches method without losing the captured views.
 2. Look at the checkerboard from many angles: tilt your head, move closer and further, and put the board in every part of the view. A view is captured when both eyes see the board and you hold still for about half a second; the border flashes green.
-3. After 25 views it solves on its own, or press 现在计算 once you have 12 or more.
+3. After 25 views it solves on its own, or press 现在计算 once you have 12 or more. Bring the board into the edges and corners of the view as well: depth is only measured inside the angle the board reached.
 
 The calibration solves for:
 
@@ -345,7 +345,17 @@ The result goes to `tools/recon/calib.json`. If the error is too large, the page
 - choose how many frames must see a voxel before it shows;
 - colour the points by gray value or by height.
 
-The page also shows the rectified left eye and its disparity map.
+The image at the top has three views:
+
+- **深度:** the rectified left eye and its disparity map.
+- **校正检查:** both rectified eyes with rows marked. A point must sit on the same row in both images; if it doesn't, calibration is off.
+- **原始画面:** the raw fisheye images, with the region used for matching outlined.
+
+Below the image, the page lists the calibration's quality: reprojection error, hand-eye spread, how far out the board was seen, and the matching window size.
+
+**Rectification on the glasses.** The glasses' eyes turn outwards, so a fixed crop of the averaged view can reach beyond where the lens model was calibrated. A fisheye model can diverge there, which leaves the rectified image mostly black and the depth meaningless. Rectification therefore covers only directions both eyes see inside the angle the board reached during calibration (stored in `calib.json` as `theta_max`), where the distortion model is still monotonic, and inside both images. Calibrations from before this was recorded still load, but the page suggests calibrating again.
+
+What limits accuracy now is the board calibration of the rotation between the eyes. On a simulated outward-turned rig it came out within 0.2–0.5°, mostly around the vertical axis. That shifts every disparity a little, which left-right image matching alone can't detect.
 
 **What to expect.** These are tested numbers from a simulated 9 cm fisheye rig:
 
