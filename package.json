@@ -1,0 +1,13 @@
+{
+  "name": "viture-open-walker-root",
+  "private": true,
+  "scripts": {
+    "postinstall": "npm --prefix app install",
+    "dev": "npm --prefix app run dev",
+    "dev:mock": "npm --prefix app run dev:mock",
+    "build": "npm --prefix app run build",
+    "start": "npm --prefix app start",
+    "helper": "make -C helper",
+    "package": "npm --prefix app run package"
+  }
+}

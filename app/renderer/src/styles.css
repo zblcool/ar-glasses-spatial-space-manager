@@ -1,0 +1,209 @@
+/* `hidden` must always win over component display rules (e.g. .setup's flex). */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  color: #e8eef7;
+  font: 12px/1.45 ui-monospace, 'SF Mono', Menlo, monospace;
+  user-select: none;
+}
+
+#scene {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  /* The pointer is drawn in 3D (a dot at the right depth); hide the system cursor. */
+  cursor: none;
+}
+
+/* Side-by-side stereo: HTML would only reach one eye; the 3D HUD shows this instead. */
+body.stereo .panel,
+body.stereo .status,
+body.stereo .toast {
+  display: none !important;
+}
+
+.panel {
+  position: fixed;
+  margin: 0;
+  padding: 10px 12px;
+  background: rgba(8, 12, 20, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  pointer-events: none;
+  white-space: pre;
+}
+
+.debug {
+  top: 12px;
+  left: 12px;
+  min-width: 260px;
+}
+
+.help {
+  bottom: 12px;
+  left: 12px;
+}
+.help kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0 4px;
+  margin-right: 6px;
+  text-align: center;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+  color: #fff;
+}
+
+.status {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(8, 12, 20, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  pointer-events: none;
+}
+.status::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--dot, #888);
+}
+.status[data-state='tracking'] { --dot: #3ddc84; }
+.status[data-state='mock'] { --dot: #4aa3ff; }
+.status[data-state='starting'],
+.status[data-state='searching'] { --dot: #f5c542; }
+.status[data-state='lost'],
+.status[data-state='error'],
+.status[data-state='crashed'] { --dot: #ff5a5a; }
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 6px;
+  background: rgba(8, 12, 20, 0.85);
+  pointer-events: none;
+}
+
+/* ---- setup / permissions screen ---- */
+.setup {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 6, 10, 0.55);
+  backdrop-filter: blur(10px);
+  font: 15px/1.45 system-ui, -apple-system, sans-serif;
+  user-select: text;
+}
+body.setup-open #scene {
+  cursor: default;
+}
+.setup-card {
+  width: min(680px, calc(100vw - 48px));
+  padding: 28px 32px;
+  border-radius: 28px;
+  background: rgba(28, 32, 40, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+}
+.setup-card h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 650;
+}
+.setup-sub {
+  margin: 4px 0 18px;
+  color: rgba(232, 238, 247, 0.65);
+}
+.setup-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.setup-dot {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ff5a5a;
+}
+.setup-dot.ok { background: #3ddc84; }
+.setup-dot.wait { background: #f5c542; }
+.setup-text {
+  flex: 1;
+  min-width: 0;
+}
+.setup-text .zh {
+  color: rgba(232, 238, 247, 0.6);
+  margin-left: 4px;
+}
+.setup-text small {
+  display: block;
+  color: rgba(232, 238, 247, 0.7);
+}
+.setup-btn {
+  flex: none;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+.setup-btn:hover { background: rgba(255, 255, 255, 0.2); }
+.setup-btn.primary {
+  background: #2f7cf6;
+  border-color: #2f7cf6;
+}
+.setup-btn.primary:hover { background: #4a8ff8; }
+.setup-note {
+  color: rgba(232, 238, 247, 0.7);
+  font-size: 13px;
+}
+.setup-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: rgba(232, 238, 247, 0.8);
+  cursor: pointer;
+}
+.setup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+.setup-hint {
+  margin: 18px 0 0;
+  color: rgba(232, 238, 247, 0.6);
+  font-size: 13px;
+  text-align: center;
+}
+.setup-hint kbd {
+  padding: 1px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 4px;
+}

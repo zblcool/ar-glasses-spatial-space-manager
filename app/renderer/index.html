@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self' ws://localhost:*"
+    />
+    <title>Viture Open Walker</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <div id="status" class="status"></div>
+    <pre id="debug" class="panel debug" hidden></pre>
+    <div id="help" class="panel help" hidden></div>
+    <div id="toast" class="toast" hidden></div>
+    <div id="setup" class="setup" hidden></div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,27 @@
+{
+  "name": "viture-open-walker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Spatial desktop MVP for VITURE Luma Ultra (Electron + three.js)",
+  "main": "dist-electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:mock": "MOCK_HEAD=1 node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "start": "electron .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "postinstall": "install-electron && node scripts/mediapipe-assets.mjs",
+    "package": "node scripts/package.mjs"
+  },
+  "devDependencies": {
+    "@types/three": "0.186.0",
+    "electron": "44.7.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.4"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "1.1.0",
+    "three": "0.186.1"
+  }
+}
