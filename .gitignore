@@ -1,0 +1,7 @@
+node_modules/
+app/dist/
+app/dist-electron/
+helper/build/
+.DS_Store
+app/release/
+app/assets/public/mediapipe/
