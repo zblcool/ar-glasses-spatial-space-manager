@@ -15,3 +15,5 @@ vendor/viture-sdk/
 viture_glasses_sdk.zip
 /include/
 /aarch64/
+/demo/
+/demo-source/

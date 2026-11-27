@@ -67,7 +67,7 @@ make -C helper       # → helper/build/viture-pose-helper (+ copies of the two 
 
 The two SDK dylibs are copied next to the binary. `libglasses` loads `libcarina_vio.dylib` from **its own directory** using `dladdr` + `dlopen`, so both files must stay together.
 
-**Code signature fix.** SDK 2.4.1 ships `libglasses.dylib` with an **invalid** ad-hoc signature (`codesign -v` reports "code or signature have been modified"). The copy inside VITURE's own `glasses-demo.app` is byte-identical and broken the same way. On Apple Silicon the kernel SIGKILLs any process that loads it: the helper dies with exit status 137 and prints nothing. The Makefile therefore ad-hoc re-signs **the copy in `helper/build/` only** (`codesign --force --sign -`) and leaves the SDK files untouched. A distributed build would need the dylibs properly signed, by you or by VITURE.
+**Code signature fix.** SDK 2.4.1 ships `libglasses.dylib` with an **invalid** ad-hoc signature (`codesign -v` reports "code or signature have been modified"). The copy inside VITURE's own `glasses-demo.app` (SDK demo, not in this repo) is byte-identical and broken the same way. On Apple Silicon the kernel SIGKILLs any process that loads it: the helper dies with exit status 137 and prints nothing. The Makefile therefore ad-hoc re-signs **the copy in `helper/build/` only** (`codesign --force --sign -`) and leaves the SDK files untouched. A distributed build would need the dylibs properly signed, by you or by VITURE.
 
 Useful helper commands:
 
