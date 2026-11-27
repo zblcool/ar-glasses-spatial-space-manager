@@ -11,3 +11,7 @@ __pycache__/
 tools/recon/.venv/
 tools/recon/captures/
 tools/capture/build/
+vendor/viture-sdk/
+viture_glasses_sdk.zip
+/include/
+/aarch64/

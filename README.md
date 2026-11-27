@@ -35,7 +35,7 @@ Click any screen to put the real mouse on that display and use its apps directly
 │   ├── assets/             drop panorama.jpg here; public/mediapipe/ = hand-tracking runtime (generated)
 │   ├── scripts/            dev / build / package scripts (no extra deps)
 │   └── release/            packaged .app (generated, git-ignored)
-└── include/, aarch64/      Viture SDK 2.4.1 (see "SDK location")
+└── vendor/viture-sdk/     Viture SDK 2.4.1, not in git (see "SDK location")
 ```
 
 ## Prerequisites
@@ -47,7 +47,7 @@ Click any screen to put the real mouse on that display and use its apps directly
 
 ### SDK location
 
-The Makefile looks for the SDK in `vendor/viture-sdk/` first (`include/` and `aarch64/` inside it). If that isn't there, it uses the repository root, which is where the SDK is unpacked right now. You can override this:
+The SDK is **not included in this repository**; get it from VITURE. Unpack it into `vendor/viture-sdk/` so that `include/` and `aarch64/` are inside it (that folder is git-ignored). The Makefile looks there first, then falls back to the repository root (`include/`, `aarch64/`, also git-ignored). You can override this:
 
 ```bash
 make -C helper SDK_DIR=/path/to/sdk

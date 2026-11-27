@@ -1,8 +1,8 @@
 # viture-pose-helper — build with:  make -C helper
 #
-# SDK_DIR must contain include/ (headers) and aarch64/ (libglasses.dylib,
-# libcarina_vio.dylib). Defaults to vendor/viture-sdk, falling back to the
-# repository root (where the SDK zip was originally unpacked).
+# The Viture SDK is not part of the repository. SDK_DIR must contain include/
+# (headers) and aarch64/ (libglasses.dylib, libcarina_vio.dylib). Defaults to
+# vendor/viture-sdk (git-ignored), falling back to the repository root.
 
 ROOT     := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))/..)
 SDK_DIR  ?= $(if $(wildcard $(ROOT)/vendor/viture-sdk/include/viture_glasses_provider.h),$(ROOT)/vendor/viture-sdk,$(ROOT))
@@ -28,8 +28,8 @@ LDFLAGS  := -arch arm64 -mmacosx-version-min=13.0 -L$(SDK_LIB) -lglasses \
 all: check-sdk $(TARGET) $(DISPLAY) $(CAMERA) $(addprefix $(BUILD)/,$(DYLIBS))
 
 check-sdk:
-	@test -f $(SDK_INC)/viture_glasses_provider.h || { echo "Viture SDK headers not found in $(SDK_INC) (set SDK_DIR=...)"; exit 1; }
-	@test -f $(SDK_LIB)/libglasses.dylib || { echo "libglasses.dylib not found in $(SDK_LIB) (set SDK_DIR=...)"; exit 1; }
+	@test -f $(SDK_INC)/viture_glasses_provider.h || { echo "Viture SDK headers not found in $(SDK_INC) (unpack the Viture SDK into vendor/viture-sdk/ or set SDK_DIR=...)"; exit 1; }
+	@test -f $(SDK_LIB)/libglasses.dylib || { echo "libglasses.dylib not found in $(SDK_LIB) (unpack the Viture SDK into vendor/viture-sdk/ or set SDK_DIR=...)"; exit 1; }
 
 $(BUILD):
 	mkdir -p $@
